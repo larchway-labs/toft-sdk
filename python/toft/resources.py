@@ -1,0 +1,219 @@
+"""Durable storage, resolved by name.
+
+``TOFT_STORAGE`` is a JSON array of the resources an administrator mapped
+to this app. App code resolves a resource by the **name** it was given, never
+by the path it happens to be mounted at today — that is what lets an
+administrator move a resource without every app that uses it breaking, and
+hard-coding ``/data/reports`` is exactly what this exists to stop::
+
+    reports = toft.storage("reports")
+    (reports.path / "2026-08.xlsx").write_bytes(data)
+
+A miss names what *is* mounted. "no such resource" on its own sends somebody to
+their administrator to ask a question the process could already answer.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+from dataclasses import dataclass
+from pathlib import Path
+
+from .env import ENV_STORAGE
+from .errors import ToftError
+
+
+@dataclass(frozen=True)
+class Mount:
+    """One storage resource mapped to this app."""
+
+    name: str
+    kind: str = ""
+    path: Path = Path()
+    access: str = ""
+    # Which directory of the resource this mount is rooted at, and "" is the
+    # whole resource. It is here because **two mounts of one resource share a
+    # name**, and the name is how app code locates a resource — so this is what
+    # tells them apart. It is deliberately not part of ``path``: where a mount
+    # appears stays the administrator's choice.
+    folder: str = ""
+
+    @property
+    def read_only(self) -> bool:
+        return self.access == "read"
+
+    def put(self, source: "str | Path", name: str | None = None) -> Path:
+        """Copy a local file into this mount, and return where it landed.
+
+        Sugar over the mounted path and nothing more::
+
+            toft.store("reports").put("nightly.parquet", "2026-08.parquet")
+
+        An app that has the store mapped already has the folder on its
+        filesystem; this saves it from joining paths. It deliberately does
+        **not** call the platform's presign routes. An SDK that could presign
+        its way into a store would let a shared-mode app write to durable
+        storage, which ADR §12a refuses at deploy time on purpose — a capability
+        arriving through a side door is how a mode stops being a knob and becomes
+        a one-way door.
+
+        The access level is checked here only for a better message. **The mount
+        is the enforcement**: Mountpoint refuses an unsupported operation, so an
+        app that tries to replace an object it was granted `write` on fails at
+        the first wrong call rather than corrupting data slowly.
+        """
+        src = Path(source)
+        target_name = name or src.name
+        _check_relative_name(target_name)
+
+        if self.read_only:
+            raise ToftError(
+                f"{self.name!r} is mounted read-only, so this app cannot write to it. "
+                f"An administrator sets the access level where the resource is mapped."
+            )
+
+        destination = self.path / target_name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, destination)
+        return destination
+
+
+def _check_relative_name(name: str) -> None:
+    """Refuse a name that would land outside the mount.
+
+    The same discipline the platform applies to an uploaded object's name, for
+    the same reason: the name is the caller's and the location is not, so a
+    traversal segment here would write into the app's own filesystem — over its
+    code, in the worst case — rather than into the storage it was given.
+    """
+    if not name:
+        raise ToftError("a name is required")
+    if name.startswith("/") or name.endswith("/"):
+        raise ToftError(f"a name is relative to the mount, got {name!r}")
+    if "\\" in name:
+        raise ToftError(f"a name must use forward slashes, got {name!r}")
+    for segment in name.split("/"):
+        if segment in ("", ".", ".."):
+            raise ToftError(f"a name must not contain {segment!r} segments, got {name!r}")
+
+
+def mounts() -> list[Mount]:
+    """Every resource mapped to this app, in the order the platform listed them.
+
+    That order is the platform's ``ORDER BY m.path``, which is worth knowing
+    only because two mounts can share a name: it is stable, and it is not a
+    ranking. Ask for the one you mean with ``folder=``.
+
+    Empty off-platform and empty when an administrator has mapped nothing —
+    deliberately not an error, because "this app has no durable storage" is a
+    normal state that app code can branch on.
+    """
+    raw = os.environ.get(ENV_STORAGE, "").strip()
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ToftError(f"{ENV_STORAGE} is not valid JSON: {exc}") from None
+    if not isinstance(parsed, list):
+        raise ToftError(f"{ENV_STORAGE} should be a JSON array, got {type(parsed).__name__}")
+
+    out: list[Mount] = []
+    for entry in parsed:
+        if not isinstance(entry, dict):
+            continue
+        out.append(
+            Mount(
+                name=str(entry.get("name", "")),
+                kind=str(entry.get("kind", "")),
+                path=Path(str(entry.get("path", ""))),
+                access=str(entry.get("access", "")),
+                folder=str(entry.get("folder", "")),
+            )
+        )
+    return out
+
+
+def storage(name: str, folder: str | None = None) -> Mount:
+    """Resolve one resource by name, and — where it is mapped twice — by folder.
+
+        toft.storage("warehouse").path
+        toft.storage("drop", folder="backup").path
+
+    **A name is not always one mount.** A mapping's identity is
+    ``(resource, app, folder)``, so an administrator can map one resource twice:
+    the root read-only and a folder at ``write``, at two paths in one workload.
+    Both arrive under the same name, and ``folder`` is what tells them apart.
+
+    So a name that matches two mounts, with no folder named, **raises rather
+    than picking one**. Returning the first was the earlier behaviour and it
+    made the choice by the alphabetical order of paths an administrator chose —
+    a silent answer to a question the caller did not know they were asking.
+
+    ``folder=None`` means *do not care*, which is the ordinary case and is only
+    ambiguous when there is genuinely more than one. ``folder=""`` names the
+    root explicitly.
+    """
+    if not name:
+        raise ToftError("storage() needs the name an administrator gave the resource")
+    available = mounts()
+    named = [m for m in available if m.name == name]
+
+    if folder is not None:
+        for mount in named:
+            if mount.folder == folder:
+                return mount
+        if named:
+            raise ToftError(
+                f"{name!r} is mounted, but not at folder {folder!r}. "
+                f"Mounted here: {_folders(named)}"
+            )
+    elif len(named) == 1:
+        return named[0]
+    elif len(named) > 1:
+        raise ToftError(
+            f"{len(named)} mounts are named {name!r} — {_folders(named)}. "
+            f"Name one: toft.storage({name!r}, folder={named[0].folder!r})"
+        )
+
+    if not available:
+        raise ToftError(
+            f"no storage resource named {name!r}, and this app has none mapped at "
+            f"all — an administrator maps storage on the app's Storage tab"
+        )
+    names = ", ".join(sorted(m.name for m in available)) or "(none)"
+    raise ToftError(f"no storage resource named {name!r}. Mapped to this app: {names}")
+
+
+def _folders(named: list[Mount]) -> str:
+    """The folders one name is mounted at, with the level of each.
+
+    The level is in the message because it is usually the reason there are two:
+    a read corpus and a write drop are the shape this feature exists for, and a
+    caller who picked the wrong one wants to see that immediately.
+    """
+    return ", ".join(
+        f"folder {m.folder!r} at {m.access or 'read'}" for m in named
+    )
+
+
+def store(name: str, folder: str | None = None) -> Mount:
+    """Resolve one **store** by name.
+
+    A kind-checked alias of :func:`storage`. Uploads are a store feature end to
+    end — the CLI command is ``toft store``, the grant table refuses a volume, and
+    this is the accessor that matches — so a reader never has to remember which
+    kinds are in scope, because the name is the kind.
+
+    ``storage()`` keeps answering for both kinds, because app code that has a
+    volume mounted has done nothing wrong.
+    """
+    mount = storage(name, folder)
+    if mount.kind and mount.kind != "store":
+        raise ToftError(
+            f"{name!r} is a {mount.kind}, not a store. A volume is a real filesystem — "
+            f"write to toft.storage({name!r}).path directly, with the ordinary file APIs."
+        )
+    return mount

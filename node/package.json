@@ -1,0 +1,12 @@
+{
+  "name": "@larchway/toft",
+  "version": "0.3.0",
+  "description": "Toft app SDK — ask what this app may do, resolve its storage by name, and start background work as the app or on a viewer's behalf.",
+  "type": "module",
+  "main": "index.js",
+  "exports": { ".": "./index.js" },
+  "engines": { "node": ">=18" },
+  "files": ["index.js", "app.js", "caller.js", "data.js", "jobs.js", "notify.js", "task.js", "transport.js", "viewer.js"],
+  "scripts": { "test": "node --test" },
+  "license": "Apache-2.0"
+}

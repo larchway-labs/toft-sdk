@@ -1,0 +1,17 @@
+[project]
+name = "toft-sdk"
+version = "0.3.0"
+description = "Toft app SDK — an app's own identity, its integrations (Slack, email), storage and scratch."
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+# No dependencies on purpose: this installs into a customer's app image beside
+# their own tree, and a version conflict with our HTTP library would be our bug
+# appearing in their build.
+dependencies = []
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["toft*"]

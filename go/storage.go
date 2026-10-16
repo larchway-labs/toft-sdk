@@ -1,0 +1,273 @@
+package toft
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+)
+
+// Durable storage, resolved by name.
+//
+// TOFT_STORAGE is a JSON array of the resources an administrator mapped to
+// this app. App code resolves a resource by the **name** it was given, never by
+// the path it happens to be mounted at today — that is what lets an
+// administrator move a resource without every app that uses it breaking, and
+// hard-coding "/data/reports" is exactly what this exists to stop:
+//
+//	reports, err := toft.Storage("reports")
+//	os.WriteFile(filepath.Join(reports.Path, "2026-08.xlsx"), data, 0o644)
+//
+// A miss names what *is* mounted. "no such resource" on its own sends somebody
+// to their administrator to ask a question the process could already answer.
+
+// Mount is one storage resource mapped to this app.
+type Mount struct {
+	Name   string
+	Kind   string
+	Path   string
+	Access string
+	// Folder is which directory of the resource this mount is rooted at, and
+	// "" is the whole resource. It is here because **two mounts of one resource
+	// share a name**, and the name is how app code locates a resource — so this
+	// is what tells them apart. Deliberately not part of Path: where a mount
+	// appears stays the administrator's choice.
+	Folder string
+}
+
+// ReadOnly reports whether an administrator mapped this resource read-only.
+func (m Mount) ReadOnly() bool { return m.Access == "read" }
+
+// Put copies a local file into this mount, and returns where it landed.
+//
+// Sugar over the mounted path and nothing more:
+//
+//	toft.Store("reports").Put("nightly.parquet", "2026-08.parquet")
+//
+// An app that has the store mapped already has the folder on its filesystem;
+// this saves it from joining paths. It deliberately does **not** call the
+// platform's presign routes. An SDK that could presign its way into a store
+// would let a shared-mode app write to durable storage, which the platform
+// refuses at deploy time on purpose — a capability arriving through a side door
+// is how a mode stops being a knob and becomes a one-way door.
+//
+// The access level is checked here only for a better message. **The mount is the
+// enforcement**: Mountpoint refuses an unsupported operation, so an app that
+// tries to replace an object it was granted write on fails at the first wrong
+// call rather than corrupting data slowly.
+func (m Mount) Put(source, name string) (string, error) {
+	target := name
+	if target == "" {
+		target = filepath.Base(source)
+	}
+	if err := checkRelativeName(target); err != nil {
+		return "", err
+	}
+	if m.ReadOnly() {
+		return "", &Error{Message: fmt.Sprintf(
+			"%q is mounted read-only, so this app cannot write to it. An administrator "+
+				"sets the access level where the resource is mapped.", m.Name)}
+	}
+
+	destination := filepath.Join(m.Path, filepath.FromSlash(target))
+	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+		return "", &Error{Message: err.Error(), Wrapped: err}
+	}
+	in, err := os.Open(source)
+	if err != nil {
+		return "", &Error{Message: fmt.Sprintf("cannot read %s: %v", source, err), Wrapped: err}
+	}
+	defer in.Close()
+	out, err := os.Create(destination)
+	if err != nil {
+		return "", &Error{Message: fmt.Sprintf("cannot write %s: %v", destination, err), Wrapped: err}
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return "", &Error{Message: fmt.Sprintf("cannot write %s: %v", destination, err), Wrapped: err}
+	}
+	if err := out.Close(); err != nil {
+		return "", &Error{Message: fmt.Sprintf("cannot write %s: %v", destination, err), Wrapped: err}
+	}
+	return destination, nil
+}
+
+// checkRelativeName refuses a name that would land outside the mount.
+//
+// The same discipline the platform applies to an uploaded object's name, for the
+// same reason: the name is the caller's and the location is not, so a traversal
+// segment here would write into the app's own filesystem — over its code, in the
+// worst case — rather than into the storage it was given.
+func checkRelativeName(name string) error {
+	refuse := func(format string, args ...any) error {
+		return &Error{Message: fmt.Sprintf(format, args...)}
+	}
+	switch {
+	case name == "":
+		return refuse("a name is required")
+	case strings.HasPrefix(name, "/"), strings.HasSuffix(name, "/"):
+		return refuse("a name is relative to the mount, got %q", name)
+	case strings.Contains(name, `\`):
+		return refuse("a name must use forward slashes, got %q", name)
+	}
+	for _, segment := range strings.Split(name, "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return refuse("a name must not contain %q segments, got %q", segment, name)
+		}
+	}
+	return nil
+}
+
+// Mounts is every resource mapped to this app, in the order the platform listed
+// them.
+//
+// That order is the platform's ORDER BY m.path, which is worth knowing only
+// because two mounts can share a name: it is stable, and it is not a ranking.
+// Ask for the one you mean with [StorageIn].
+//
+// Empty off-platform and empty when an administrator has mapped nothing —
+// deliberately not an error, because "this app has no durable storage" is a
+// normal state that app code can branch on.
+func Mounts() ([]Mount, error) {
+	raw := strings.TrimSpace(os.Getenv(EnvStorage))
+	if raw == "" {
+		return nil, nil
+	}
+	var entries []struct {
+		Name   string `json:"name"`
+		Kind   string `json:"kind"`
+		Path   string `json:"path"`
+		Access string `json:"access"`
+		Folder string `json:"folder"`
+	}
+	if err := json.Unmarshal([]byte(raw), &entries); err != nil {
+		return nil, &Error{Message: fmt.Sprintf("%s is not a JSON array of resources: %v", EnvStorage, err), Wrapped: err}
+	}
+	out := make([]Mount, 0, len(entries))
+	for _, entry := range entries {
+		out = append(out, Mount(entry))
+	}
+	return out, nil
+}
+
+// Storage resolves one resource by the name an administrator gave it.
+//
+// **A name is not always one mount.** A mapping's identity is (resource, app,
+// folder), so an administrator can map one resource twice: the root read-only
+// and a folder at `write`, at two paths in one workload. Both arrive under the
+// same name, and the folder is what tells them apart.
+//
+// So a name matching two mounts **is an error here rather than a first match**.
+// Returning the first was the earlier behaviour and it made the choice by the
+// alphabetical order of paths an administrator chose — a silent answer to a
+// question the caller did not know they were asking. [StorageIn] names one.
+func Storage(name string) (Mount, error) { return storageIn(name, nil) }
+
+// StorageIn resolves one resource by name and folder, where it is mapped more
+// than once. The empty string is the root mapping, named explicitly.
+//
+// A second function rather than an option struct: Go has no keyword arguments,
+// and a struct carrying one string reads worse at every call site than the name
+// does.
+func StorageIn(name, folder string) (Mount, error) { return storageIn(name, &folder) }
+
+func storageIn(name string, folder *string) (Mount, error) {
+	if name == "" {
+		return Mount{}, &Error{Message: "Storage needs the name an administrator gave the resource"}
+	}
+	available, err := Mounts()
+	if err != nil {
+		return Mount{}, err
+	}
+	var named []Mount
+	for _, mount := range available {
+		if mount.Name == name {
+			named = append(named, mount)
+		}
+	}
+	switch {
+	case folder != nil:
+		for _, mount := range named {
+			if mount.Folder == *folder {
+				return mount, nil
+			}
+		}
+		if len(named) > 0 {
+			return Mount{}, &Error{Message: fmt.Sprintf(
+				"%q is mounted, but not at folder %q. Mounted here: %s",
+				name, *folder, describeFolders(named))}
+		}
+	case len(named) == 1:
+		return named[0], nil
+	case len(named) > 1:
+		return Mount{}, &Error{Message: fmt.Sprintf(
+			"%d mounts are named %q — %s. Name one: toft.StorageIn(%q, %q)",
+			len(named), name, describeFolders(named), name, named[0].Folder)}
+	}
+	if len(available) == 0 {
+		return Mount{}, &Error{Message: fmt.Sprintf(
+			"no storage resource named %q, and this app has none mapped at all — an "+
+				"administrator maps storage on the app's Storage tab", name)}
+	}
+	names := make([]string, 0, len(available))
+	for _, mount := range available {
+		names = append(names, mount.Name)
+	}
+	sort.Strings(names)
+	return Mount{}, &Error{Message: fmt.Sprintf(
+		"no storage resource named %q. Mapped to this app: %s", name, strings.Join(names, ", "))}
+}
+
+// describeFolders lists the folders one name is mounted at, with the level of
+// each.
+//
+// The level is in the message because it is usually the reason there are two: a
+// read corpus and a write drop are the shape this feature exists for, and a
+// caller who picked the wrong one wants to see that immediately.
+func describeFolders(named []Mount) string {
+	parts := make([]string, 0, len(named))
+	for _, mount := range named {
+		access := mount.Access
+		if access == "" {
+			access = "read"
+		}
+		parts = append(parts, fmt.Sprintf("folder %q at %s", mount.Folder, access))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// Store resolves one **store** by name.
+//
+// A kind-checked alias of [Storage]. Uploads are a store feature end to end —
+// the CLI command is `toft store`, the grant table refuses a volume, and this is
+// the accessor that matches — so a reader never has to remember which kinds are
+// in scope, because the name is the kind.
+//
+// [Storage] keeps answering for both kinds, because app code that has a volume
+// mounted has done nothing wrong.
+func Store(name string) (Mount, error) {
+	mount, err := Storage(name)
+	return checkStore(name, mount, err)
+}
+
+// StoreIn is [Store]'s folder-naming half, on [StorageIn]'s terms.
+func StoreIn(name, folder string) (Mount, error) {
+	mount, err := StorageIn(name, folder)
+	return checkStore(name, mount, err)
+}
+
+func checkStore(name string, mount Mount, err error) (Mount, error) {
+	if err != nil {
+		return Mount{}, err
+	}
+	if mount.Kind != "" && mount.Kind != "store" {
+		return Mount{}, &Error{Message: fmt.Sprintf(
+			"%q is a %s, not a store. A volume is a real filesystem — write to the path "+
+				"toft.Storage(%q) resolves, with the ordinary os and filepath calls.",
+			name, mount.Kind, name)}
+	}
+	return mount, nil
+}
