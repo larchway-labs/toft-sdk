@@ -2,7 +2,7 @@
 
 The libraries a Toft app calls back with — who is looking, which role they
 hold, the app's own data, storage, jobs, tasks and notifications — in the four
-languages Toft serves. This is version **0.9.0**, exactly as that release of
+languages Toft serves. This is version **0.9.1**, exactly as that release of
 Toft ships them.
 
 **You usually do not need this repository.** Toft installs the SDK into your
@@ -20,7 +20,7 @@ version by hand.
 | Go | `go/` | `import "toft"` |
 | R | `r/` | `library(toft)` |
 
-Every tag is a Toft release: `v0.9.0` is the SDK that Toft 0.9.0
+Every tag is a Toft release: `v0.9.1` is the SDK that Toft 0.9.1
 embeds. A tag is never moved.
 
 The documentation for each call is in the CLI & SDK guide:
