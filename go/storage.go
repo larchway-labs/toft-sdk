@@ -41,18 +41,23 @@ type Mount struct {
 // ReadOnly reports whether an administrator mapped this resource read-only.
 func (m Mount) ReadOnly() bool { return m.Access == "read" }
 
+// Mounted reports whether this resource is on this workload's filesystem at
+// all. A store on a shared host is not: its Path is "", and joining a name onto
+// "" writes into the app's working directory — so check this, or use the
+// methods in store.go, which reach a store the same way in both modes.
+func (m Mount) Mounted() bool { return m.Path != "" }
+
 // Put copies a local file into this mount, and returns where it landed.
 //
 // Sugar over the mounted path and nothing more:
 //
 //	toft.Store("reports").Put("nightly.parquet", "2026-08.parquet")
 //
-// An app that has the store mapped already has the folder on its filesystem;
-// this saves it from joining paths. It deliberately does **not** call the
-// platform's presign routes. An SDK that could presign its way into a store
-// would let a shared-mode app write to durable storage, which the platform
-// refuses at deploy time on purpose — a capability arriving through a side door
-// is how a mode stops being a knob and becomes a one-way door.
+// An app that has the store mounted already has the folder on its filesystem;
+// this saves it from joining paths, and calls nothing. Where the store is not
+// mounted — on an install with no cluster — this refuses, and [Mount.Upload]
+// reaches it through the platform instead, at the same level, under the same
+// mapping.
 //
 // The access level is checked here only for a better message. **The mount is the
 // enforcement**: Mountpoint refuses an unsupported operation, so an app that
@@ -65,6 +70,11 @@ func (m Mount) Put(source, name string) (string, error) {
 	}
 	if err := checkRelativeName(target); err != nil {
 		return "", err
+	}
+	if !m.Mounted() {
+		return "", &Error{Message: fmt.Sprintf(
+			"%q is not mounted here, so Put has nowhere to copy to — use Upload, which "+
+				"reaches it through the platform", m.Name)}
 	}
 	if m.ReadOnly() {
 		return "", &Error{Message: fmt.Sprintf(

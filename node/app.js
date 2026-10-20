@@ -19,6 +19,7 @@
  * administrator for a fact this process already has.
  */
 
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -114,7 +115,11 @@ export class Mount {
   constructor(raw) {
     this.name = raw.name ?? "";
     this.kind = raw.kind ?? "";
-    this.path = raw.path ?? "";
+    // The path as the platform described it, and "" for a store that is not
+    // mounted here. Read through `path`, which refuses rather than handing back
+    // "" — `path.join("", name)` is the working directory, and writing there is
+    // writing into the app's own tree.
+    this.mountPath = raw.path ?? "";
     this.access = raw.access ?? "read";
     // Which directory of the resource this mount is rooted at, and "" is the
     // whole resource. It is here because **two mounts of one resource share a
@@ -122,6 +127,21 @@ export class Mount {
     // tells them apart. Deliberately not part of `path`: where a mount appears
     // stays the administrator's choice.
     this.folder = raw.folder ?? "";
+  }
+
+  /** Whether this resource is on this workload's filesystem at all. */
+  get mounted() {
+    return this.mountPath !== "";
+  }
+
+  get path() {
+    if (!this.mounted) {
+      throw new ToftError(
+        `${JSON.stringify(this.name)} is not mounted here — on this install the app reaches it ` +
+          `through the platform: use list(), upload(), download() or url()`,
+      );
+    }
+    return this.mountPath;
   }
 
   /** Whether this mount permits a write at all — every rung above `read`. */
@@ -135,10 +155,10 @@ export class Mount {
    *     await toft.store("reports").put("nightly.parquet", "2026-08.parquet");
    *
    * Sugar over the mounted path and nothing more. An app that has the store
-   * mapped already has the folder on its filesystem; this saves it from joining
-   * paths. It deliberately does **not** call the platform's presign routes — an
-   * SDK that could presign its way into a store would let a shared-mode app
-   * write to durable storage, which ADR §12a refuses at deploy time on purpose.
+   * mounted already has the folder on its filesystem; this saves it from joining
+   * paths, and calls nothing. Where the store is not mounted — on an install with
+   * no cluster — this refuses, and `upload()` reaches it through the platform
+   * instead, at the same level, under the same mapping.
    *
    * The access level is checked here only for a better message. **The mount is
    * the enforcement**: Mountpoint refuses an unsupported operation, so an app
@@ -149,6 +169,12 @@ export class Mount {
     const targetName = name ?? path.basename(source);
     checkRelativeName(targetName);
 
+    if (!this.mounted) {
+      throw new ToftError(
+        `${JSON.stringify(this.name)} is not mounted here, so put() has nowhere to copy to — ` +
+          `use upload(), which reaches it through the platform`,
+      );
+    }
     if (!this.writable) {
       throw new ToftError(
         `${JSON.stringify(this.name)} is mounted read-only, so this app cannot write to it. ` +
@@ -161,6 +187,131 @@ export class Mount {
     await fs.copyFile(source, destination);
     return destination;
   }
+
+  // --- Over the platform's signed URLs, in both modes ---
+  //
+  // These reach a store through /api/v1/app/store whether or not it is
+  // mounted, so an app written against them moves between execution modes
+  // unchanged. The platform signs and never sees the bytes.
+
+  /** One page of what is under `path`; names are relative to it. */
+  async list(listPath = "", { cursor = "" } = {}) {
+    if (listPath) checkRelativeName(listPath.replace(/\/$/, ""));
+    const page =
+      (await transport().get(
+        this.#route("/api/v1/app/store/{slug}/objects", "", { path: listPath, cursor }),
+      )) ?? {};
+    return {
+      objects: page.objects ?? [],
+      prefixes: page.prefixes ?? [],
+      nextCursor: page.next_cursor ?? "",
+      access: page.access ?? "",
+    };
+  }
+
+  /**
+   * Upload a local file as `name` (its own name by default). At `write` this
+   * creates new objects only, and an existing name is a refusal that says so.
+   */
+  async upload(source, name) {
+    const target = name || path.basename(source);
+    checkRelativeName(target);
+    const data = await fs.readFile(source);
+    const signed = await transport().postJson(this.#route("/api/v1/app/store/{slug}/objects"), {
+      name: target,
+      size: data.length,
+      sha256: createHash("sha256").update(data).digest("hex"),
+      md5: createHash("md5").update(data).digest("hex"),
+    });
+    try {
+      await sendSigned(signed, data);
+    } catch (err) {
+      if (err instanceof ToftError && err.status === 412) {
+        throw new ToftError(
+          `${JSON.stringify(target)} already exists in ${JSON.stringify(this.name)}, and this ` +
+            `app's access (${this.access}) creates new objects only`,
+          { status: 412 },
+        );
+      }
+      throw err;
+    }
+    return target;
+  }
+
+  /** Fetch one object's bytes, as a Buffer. */
+  async download(name) {
+    return sendSigned(await this.#signGet(name, false));
+  }
+
+  /**
+   * A signed GET for one object, to hand to a browser. It lives fifteen
+   * minutes, and anyone holding it reads that object until then — the point for
+   * a download link, and the reason not to log one.
+   */
+  async url(name, { attachment = false } = {}) {
+    return (await this.#signGet(name, attachment)).url;
+  }
+
+  /** Delete one object. Needs `full`. */
+  async remove(name) {
+    checkRelativeName(name);
+    await sendSigned(await transport().del(this.#route("/api/v1/app/store/{slug}/objects/{name}", name)));
+  }
+
+  async #signGet(name, attachment) {
+    checkRelativeName(name);
+    const query = attachment ? { disposition: "attachment" } : {};
+    return (
+      (await transport().get(this.#route("/api/v1/app/store/{slug}/objects/{name}", name, query))) ?? {}
+    );
+  }
+
+  // `route` is the platform's route, spelled whole so a reader — and the SDK
+  // contract test — sees which one each call reaches. The folder always
+  // travels, "" included: it names *this* mapping, so a resource mapped twice
+  // is never a question the platform has to ask back.
+  #route(route, name = "", query = {}) {
+    if (this.kind && this.kind !== "store") {
+      throw new ToftError(
+        `${JSON.stringify(this.name)} is a ${this.kind}, which is reached at its path — only ` +
+          `an object store is reached over signed URLs`,
+      );
+    }
+    const params = new URLSearchParams({ folder: this.folder });
+    for (const [k, v] of Object.entries(query)) if (v) params.set(k, v);
+    const filled = route
+      .replace("{slug}", encodeURIComponent(this.name))
+      .replace("{name}", encodeName(name));
+    return `${filled}?${params}`;
+  }
+}
+
+function encodeName(name) {
+  return name.split("/").map(encodeURIComponent).join("/");
+}
+
+/**
+ * Carry out a signed request against the object store: the signed headers
+ * verbatim, and no Toft header at all — the URL is the whole authorization.
+ */
+async function sendSigned(signed, body) {
+  if (!signed?.url) throw new ToftError("the platform returned no signed URL");
+  let resp;
+  try {
+    resp = await fetch(signed.url, {
+      method: signed.method || "GET",
+      headers: signed.headers ?? {},
+      body,
+    });
+  } catch (err) {
+    throw new ToftError(`cannot reach the object store: ${err.message}`);
+  }
+  if (!resp.ok) {
+    throw new ToftError(`the object store refused the request: ${resp.status} ${resp.statusText}`, {
+      status: resp.status,
+    });
+  }
+  return Buffer.from(await resp.arrayBuffer());
 }
 
 /**
