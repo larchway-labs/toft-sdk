@@ -2,6 +2,7 @@ package toft
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -209,6 +210,17 @@ func (r JobRun) Output(ctx context.Context) ([]byte, error) {
 	return t.follow(ctx, fmt.Sprintf("%s/%s/output", jobRunsPath, r.ID), r.headers)
 }
 
+// OutputJSON decodes the output WriteOutputJSON wrote into v, and reports false
+// when the run produced none. The reading twin every caller otherwise writes by
+// hand.
+func (r JobRun) OutputJSON(ctx context.Context, v any) (bool, error) {
+	raw, err := r.Output(ctx)
+	if err != nil || len(raw) == 0 {
+		return false, err
+	}
+	return true, json.Unmarshal(raw, v)
+}
+
 // LogLine is one line of a run's captured output.
 type LogLine struct {
 	Seq    int    `json:"seq"`
@@ -396,7 +408,8 @@ func (j *JobsClient) Mine(ctx context.Context, jobName string, limit int) ([]Job
 	if len(j.headers) == 0 {
 		return nil, &Error{Message: "Mine needs a viewer — call it on toft.ViewerFor(r.Header).Jobs. " +
 			"The app acting as itself has no viewer to scope to, and answering with every run " +
-			"would be a silent widening rather than an answer."}
+			"would be a silent widening rather than an answer.",
+			Body: map[string]any{"code": "viewer_required", "retryable": false}}
 	}
 	return j.list(ctx, "viewer", jobName, limit)
 }

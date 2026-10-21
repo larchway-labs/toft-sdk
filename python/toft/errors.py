@@ -25,6 +25,15 @@ class ToftError(RuntimeError):
     throw away the only part that could go on a page. ``code`` is that body's
     stable machine-readable name, which is what app code should branch on
     rather than matching prose that may be reworded.
+
+    **Whether to try again is the platform's call, not this class's.** Every
+    error body the platform writes carries ``code``, ``retryable`` and, for
+    codes that have one, ``hint`` — the next step in its own words.
+    :attr:`retryable` returns the platform's answer when the body has one,
+    because only the handler knows that a 503 means "this install is configured
+    without it, forever" or that a 409 means "wait for a run to finish". The
+    status rule is the fallback for refusals that never reached a handler: a
+    transport failure, a proxy's HTML page, an install older than the envelope.
     """
 
     def __init__(
@@ -45,4 +54,35 @@ class ToftError(RuntimeError):
 
     @property
     def retryable(self) -> bool:
+        """Whether trying again could plausibly work — the platform's word first."""
+        said = self.body.get("retryable")
+        if isinstance(said, bool):
+            return said
+        return self._status_retryable()
+
+    @property
+    def hint(self) -> str | None:
+        """The platform's next step for this refusal, or None when it sent none.
+
+        Written for whoever reads the failure — "mint a new key", "an
+        administrator has to lift the lock" — so an app logging the error should
+        log this too.
+        """
+        hint = self.body.get("hint")
+        return hint if isinstance(hint, str) and hint else None
+
+    def _status_retryable(self) -> bool:
         return self.status is None or self.status >= 500 or self.status == 429
+
+    @property
+    def _auto_retry(self) -> bool:
+        """Whether the transport's single built-in retry fires.
+
+        Narrower than :attr:`retryable` on purpose. The built-in retry covers a
+        request that never reached a handler — a rate limiter, a gateway — so
+        the platform can veto it (a 503 saying "not configured" is not slept
+        over) but cannot widen it to a 4xx: a 409 the platform calls retryable
+        means "wait for something", and how long is the caller's loop to
+        decide, not two seconds here.
+        """
+        return self._status_retryable() and self.retryable

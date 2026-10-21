@@ -64,18 +64,69 @@ toft_request <- function(method, path, body = NULL, query = NULL, extra_headers 
   Encoding(text) <- "UTF-8"
 
   if (resp$status_code >= 400) {
-    detail <- text
-    parsed <- tryCatch(jsonlite::fromJSON(text), error = function(e) NULL)
-    if (!is.null(parsed) && !is.null(parsed$error)) {
-      detail <- parsed$error
-    }
-    stop(sprintf("Toft %s %s failed (%d): %s",
-                 method, path, resp$status_code, detail), call. = FALSE)
+    stop(toft_error(method, path, resp, text))
   }
   if (!nzchar(trimws(text))) {
     return(invisible(NULL))
   }
   jsonlite::fromJSON(text, simplifyVector = FALSE)
+}
+
+# toft_error is the condition a refusal signals: class "toft_error" before
+# "error", so tryCatch(toft_error = ) catches the platform's refusals and
+# nothing else, and fields read with e$code, e$retryable, e$hint.
+#
+# **Whether to try again is the platform's call.** Every error body the
+# platform writes carries `code`, `retryable` and, for codes that have one,
+# `hint` — the next step in its own words. `retryable` is the platform's answer
+# when the body has one, because only the handler knows that a 503 means "this
+# install is configured without it, forever" or that a 409 means "wait for a
+# run to finish"; the status rule (429 and 5xx) is the fallback for an answer
+# that never reached a handler — a proxy's HTML page, an install older than
+# the envelope. The message is the one this transport has always raised, so
+# code matching it keeps working.
+toft_error <- function(method, path, resp, text) {
+  status <- resp$status_code
+  body <- tryCatch(jsonlite::fromJSON(text, simplifyVector = FALSE),
+                   error = function(e) NULL)
+  if (!is.list(body) || (length(body) && is.null(names(body)))) {
+    body <- list()
+  }
+  detail <- text
+  if (is.character(body$error) && length(body$error) == 1) {
+    detail <- body$error
+  }
+  code <- if (is.character(body$code) && length(body$code) == 1) body$code else ""
+  retryable <- if (is.logical(body$retryable) && length(body$retryable) == 1 &&
+                   !is.na(body$retryable)) {
+    body$retryable
+  } else {
+    status == 429 || (status >= 500 && status != 501)
+  }
+  hint <- if (is.character(body$hint) && length(body$hint) == 1 && nzchar(body$hint)) {
+    body$hint
+  } else {
+    NULL
+  }
+  retry_after <- NULL
+  header <- curl::parse_headers_list(resp$headers)[["retry-after"]]
+  if (!is.null(header)) {
+    seconds <- suppressWarnings(as.numeric(header))
+    if (!is.na(seconds) && seconds >= 0) retry_after <- seconds
+  }
+  structure(
+    class = c("toft_error", "error", "condition"),
+    list(
+      message = sprintf("Toft %s %s failed (%d): %s", method, path, status, detail),
+      call = NULL,
+      status = status,
+      code = code,
+      retryable = retryable,
+      hint = hint,
+      retry_after = retry_after,
+      body = body
+    )
+  )
 }
 
 # The app's own token in its service process; inside a job, which holds no app

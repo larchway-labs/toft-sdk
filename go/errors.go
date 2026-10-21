@@ -21,6 +21,15 @@ import (
 // the only part that could go on a page. [Error.Code] is that body's stable
 // machine-readable name, which is what app code should branch on rather than
 // matching prose that may be reworded.
+//
+// **Whether to try again is the platform's call, not this type's.** Every
+// error body the platform writes carries `code`, `retryable` and, for codes
+// that have one, `hint` — the next step in its own words. [Error.Retryable]
+// returns the platform's `retryable` when the body has one, because only the
+// handler knows that a 503 means "this install is configured without it,
+// forever" or that a 409 means "wait for a run to finish". The status rule is
+// the fallback for the refusals that never reached a handler: a transport
+// failure, a proxy's HTML page, an install older than the envelope.
 type Error struct {
 	Message    string
 	Status     int
@@ -51,13 +60,45 @@ func (e *Error) Code() string {
 	return code
 }
 
-// Retryable reports whether trying again could plausibly work: a transport
+// Retryable reports whether trying again could plausibly work. The platform's
+// own `retryable` decides when the body carries one; otherwise a transport
 // failure, anything at 500 and above, or a rate limit.
 func (e *Error) Retryable() bool {
 	if e == nil {
 		return false
 	}
+	if said, ok := e.Body["retryable"].(bool); ok {
+		return said
+	}
+	return e.statusRetryable()
+}
+
+// statusRetryable is the rule for an answer that said nothing about retrying.
+func (e *Error) statusRetryable() bool {
 	return e.Status == 0 || e.Status >= 500 || e.Status == 429
+}
+
+// Hint is the platform's next step for this refusal — "mint a new key", "an
+// administrator has to lift the lock" — or "" when it sent none. It is written
+// for whoever reads the failure, so an app logging an Error should log it too.
+func (e *Error) Hint() string {
+	if e == nil {
+		return ""
+	}
+	hint, _ := e.Body["hint"].(string)
+	return hint
+}
+
+// autoRetry is whether the transport's single built-in retry fires.
+//
+// It is narrower than [Error.Retryable] on purpose. The built-in retry covers a
+// request that never reached a handler — a rate limiter, a gateway — so the
+// platform can veto it (a 503 saying "not configured" is not slept over) but
+// cannot widen it to a 4xx: a 409 the platform calls retryable means "wait for
+// something", and how long is the caller's loop to decide, not two seconds
+// here.
+func (e *Error) autoRetry() bool {
+	return e.statusRetryable() && e.Retryable()
 }
 
 // VersionConflictError is returned when the document changed under a write that
@@ -83,7 +124,8 @@ func (e *VersionConflictError) Unwrap() error { return e.Err }
 // A first-class, actionable refusal rather than a generic error, and it carries
 // the numbers: an app renders "3 runs already queued, and 3 is the limit — try
 // again in a moment" instead of putting a stack trace in the middle of
-// somebody's page. Retryable is true, which no other 4xx here is.
+// somebody's page. Retryable is true, because the platform says a full queue
+// drains.
 type QueueFullError struct {
 	Err      *Error
 	InFlight int

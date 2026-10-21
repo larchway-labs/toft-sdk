@@ -76,8 +76,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  *
  * A first-class, actionable refusal carrying the numbers, so an app renders "3
  * runs already queued, and 3 is the limit" instead of putting a traceback in
- * the middle of somebody's page. `retryable` is true, which no other 4xx here
- * is.
+ * the middle of somebody's page. `retryable` is true, because the platform
+ * says a full queue drains.
  */
 export class QueueFull extends ToftError {
   constructor(message, options = {}) {
@@ -208,6 +208,15 @@ export class JobRun {
     return transport().follow(`${RUNS_PATH}/${this.id}/output`, this._headers);
   }
 
+  /**
+   * The output `writeOutputJson` wrote, decoded — `null` when the run produced
+   * none. The reading twin every caller otherwise writes by hand.
+   */
+  async outputJson() {
+    const raw = await this.output();
+    return raw && raw.length ? JSON.parse(Buffer.from(raw).toString("utf8")) : null;
+  }
+
   async logs(afterSeq = 0) {
     const raw = await transport().get(
       `${RUNS_PATH}/${this.id}/logs?after=${afterSeq}`,
@@ -320,6 +329,7 @@ export class Jobs {
         "mine() needs a viewer — call it on toft.viewer(req.headers).jobs. The app acting " +
           "as itself has no viewer to scope to, and answering with every run would be a " +
           "silent widening rather than an answer.",
+        { body: { code: "viewer_required", retryable: false } },
       );
     }
     return this.#list("viewer", job, limit);

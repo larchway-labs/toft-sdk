@@ -53,6 +53,10 @@ class Mount:
     # back ``Path("")`` — that is the current directory, and joining a file name
     # onto it writes into the app's own tree.
     mount_path: str = ""
+    # The level the mapping had when this process started (TOFT_STORAGE). A
+    # store reached over signed URLs is authorized per request against the
+    # mapping as it is *now*, so after an administrator changes the level the
+    # platform's answer moves at once and this value only at the next start.
     access: str = ""
     # Which directory of the resource this mount is rooted at, and "" is the
     # whole resource. It is here because **two mounts of one resource share a
@@ -210,7 +214,19 @@ class Mount:
 
 @dataclass(frozen=True)
 class Listing:
-    """One page of a store's listing."""
+    """One page of a store's listing.
+
+    Iterating it walks ``objects`` — ``for obj in store.list()`` is the obvious
+    spelling and it raised ``TypeError``. Folders are ``prefixes``; the next
+    page is ``next_cursor``.
+    """
+
+    def __iter__(self) -> "Iterator[dict[str, Any]]":
+        return iter(self.objects)
+
+    def __len__(self) -> int:
+        return len(self.objects)
+
 
     objects: "list[dict[str, Any]]" = field(default_factory=list)
     prefixes: "list[str]" = field(default_factory=list)

@@ -252,7 +252,7 @@ func (t *transport) attempt(ctx context.Context, method, path string, body []byt
 		return out, nil
 	}
 	platform, ok := AsError(err)
-	if !ok || !platform.Retryable() {
+	if !ok || !platform.autoRetry() {
 		return nil, err
 	}
 	wait := platform.RetryAfter

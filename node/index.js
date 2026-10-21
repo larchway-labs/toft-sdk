@@ -119,6 +119,7 @@ import {
   APP_CONTRACT_VERSION,
   AppTransport,
   ToftError,
+  errorFromText,
   resetTransport,
   transport,
 } from "./transport.js";
@@ -165,15 +166,9 @@ async function runnerRequest(baseUrl, token, method, path, body, timeoutMs = DEF
     });
 
     const text = await resp.text();
-    if (!resp.ok) {
-      let detail = text;
-      try {
-        detail = JSON.parse(text).error ?? text;
-      } catch {
-        /* the body was not JSON; the raw text is the best message available */
-      }
-      throw new ToftError(detail || resp.statusText, { status: resp.status });
-    }
+    // The transport's own reading of a refusal, so a job's run calls carry the
+    // envelope — code, retryable, hint — exactly as the app's calls do.
+    if (!resp.ok) throw errorFromText(resp, text);
     return text ? JSON.parse(text) : null;
   } catch (err) {
     if (err instanceof ToftError) throw err;

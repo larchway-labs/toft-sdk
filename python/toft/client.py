@@ -51,6 +51,7 @@ from typing import Any, Optional
 # jobs client to get it.
 from .caller import ROLE_UNKNOWN
 from .errors import ToftError
+from .transport import _from_http_error
 
 DEFAULT_TIMEOUT = 30.0
 
@@ -90,12 +91,9 @@ class _RunnerTransport:
                 payload = resp.read()
                 return json.loads(payload) if payload else None
         except urllib.error.HTTPError as exc:
-            detail = exc.read().decode(errors="replace")
-            try:
-                detail = json.loads(detail).get("error", detail)
-            except Exception:
-                pass
-            raise ToftError(detail or exc.reason, status=exc.code) from None
+            # The transport's own reading of a refusal, so a job's run calls
+            # carry the envelope — code, retryable, hint — as the app's do.
+            raise _from_http_error(exc) from None
         except urllib.error.URLError as exc:
             raise ToftError(f"cannot reach Toft at {self._base}: {exc.reason}") from None
 

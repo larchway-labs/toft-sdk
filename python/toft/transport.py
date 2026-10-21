@@ -267,7 +267,7 @@ class AppTransport:
         try:
             return self._once(method, path, data, content_type, headers, timeout)
         except ToftError as exc:
-            if not exc.retryable:
+            if not exc._auto_retry:
                 raise
             time.sleep(exc.retry_after if exc.retry_after is not None else DEFAULT_RETRY_AFTER)
             return self._once(method, path, data, content_type, headers, timeout)

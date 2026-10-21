@@ -64,6 +64,7 @@ time or memory, because a second attempt would end the same way.
 
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass, field
 from collections.abc import Mapping
@@ -94,7 +95,8 @@ class QueueFull(ToftError):
     A first-class, actionable refusal rather than a generic error, and it
     carries the numbers: an app renders "3 runs already queued, and 3 is the
     limit — try again in a moment" instead of putting a traceback in the middle
-    of somebody's page. :attr:`retryable` is true, which no other 4xx here is.
+    of somebody's page. :attr:`retryable` is true, because the platform says a
+    full queue drains.
     """
 
     def __init__(self, message: str, in_flight: int = 0, limit: int = 0, **kw: Any) -> None:
@@ -247,6 +249,13 @@ class JobRun:
         """
         return transport().follow(f"{RUNS_PATH}/{self.id}/output", self._headers)
 
+    def output_json(self) -> Any:
+        """The output :meth:`Run.write_output_json` wrote, decoded — ``None``
+        when the run produced none. The reading twin every caller otherwise
+        writes as ``json.loads(run.output() or b"null")``."""
+        raw = self.output()
+        return json.loads(raw) if raw else None
+
     # --- Logs ---
 
     def logs(self, after_seq: int = 0) -> list[dict]:
@@ -352,7 +361,8 @@ class Jobs:
             raise ToftError(
                 "mine() needs a viewer — call it on toft.viewer(request.headers).jobs. "
                 "The app acting as itself has no viewer to scope to, and answering "
-                "with every run would be a silent widening rather than an answer."
+                "with every run would be a silent widening rather than an answer.",
+                body={"code": "viewer_required", "retryable": False},
             )
         return self._list(scope="viewer", job=job, limit=limit)
 
@@ -382,4 +392,8 @@ def _typed(exc: ToftError) -> ToftError:
         limit=int(body.get("limit") or 0),
         status=exc.status,
         retry_after=exc.retry_after,
+        # The platform's body, whole: its code, retryable and hint are the
+        # envelope every refusal carries, and rebuilding the error from the
+        # counts alone dropped them — QueueFull read code "".
+        body=body,
     )

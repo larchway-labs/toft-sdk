@@ -42,6 +42,15 @@ export const ENV_JOB_NAME = "TOFT_JOB_NAME";
  * — and flattening those into a message string throws away the only part that
  * could go on a page. `code` is the stable name to branch on, rather than prose
  * that may be reworded.
+ *
+ * **Whether to try again is the platform's call, not this class's.** Every
+ * error body the platform writes carries `code`, `retryable` and, for codes
+ * that have one, `hint` — the next step in its own words. `retryable` returns
+ * the platform's answer when the body has one, because only the handler knows
+ * that a 503 means "this install is configured without it, forever" or that a
+ * 409 means "wait for a run to finish". The status rule is the fallback for
+ * refusals that never reached a handler: a transport failure, a proxy's HTML
+ * page, an install older than the envelope.
  */
 export class ToftError extends Error {
   constructor(message, { status, retryAfter, body, offPlatform } = {}) {
@@ -66,7 +75,34 @@ export class ToftError extends Error {
 
   get retryable() {
     if (this.offPlatform) return false;
+    if (typeof this.body.retryable === "boolean") return this.body.retryable;
+    return this.#statusRetryable();
+  }
+
+  /**
+   * The platform's next step for this refusal — "mint a new key", "an
+   * administrator has to lift the lock" — or undefined when it sent none.
+   * Written for whoever reads the failure, so an app logging the error should
+   * log this too.
+   */
+  get hint() {
+    return typeof this.body.hint === "string" && this.body.hint ? this.body.hint : undefined;
+  }
+
+  #statusRetryable() {
     return this.status === undefined || this.status >= 500 || this.status === 429;
+  }
+
+  /**
+   * Whether the transport's single built-in retry fires. Narrower than
+   * `retryable` on purpose: that retry covers a request that never reached a
+   * handler — a rate limiter, a gateway — so the platform can veto it (a 503
+   * saying "not configured" is not slept over) but cannot widen it to a 4xx. A
+   * 409 the platform calls retryable means "wait for something", and how long
+   * is the caller's loop to decide, not two seconds here.
+   */
+  get autoRetry() {
+    return this.retryable && this.#statusRetryable();
   }
 }
 
@@ -210,7 +246,7 @@ export class AppTransport {
     try {
       return await this.#onceForm(path, form, headers);
     } catch (err) {
-      if (!(err instanceof ToftError) || !err.retryable) throw err;
+      if (!(err instanceof ToftError) || !err.autoRetry) throw err;
       await sleep(err.retryAfter !== undefined ? err.retryAfter * 1000 : DEFAULT_RETRY_AFTER_MS);
       return this.#onceForm(path, form, headers);
     }
@@ -287,7 +323,7 @@ export class AppTransport {
     try {
       return await this.#once(method, path, body, headers);
     } catch (err) {
-      if (!(err instanceof ToftError) || !err.retryable) throw err;
+      if (!(err instanceof ToftError) || !err.autoRetry) throw err;
       await sleep(err.retryAfter !== undefined ? err.retryAfter * 1000 : DEFAULT_RETRY_AFTER_MS);
       return this.#once(method, path, body, headers);
     }
@@ -343,7 +379,7 @@ async function errorFrom(resp) {
  * Refusals from `/api/v1/app/*` are written for a person and name the remedy.
  * Flattening one into "403 Forbidden" throws away the only part that helps.
  */
-function errorFromText(resp, text) {
+export function errorFromText(resp, text) {
   let body = {};
   let detail = text;
   try {
