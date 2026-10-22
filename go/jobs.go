@@ -3,6 +3,7 @@ package toft
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -183,8 +184,15 @@ func (r JobRun) Wait(ctx context.Context, pollInterval time.Duration) (JobRun, e
 		}
 		select {
 		case <-ctx.Done():
+			// Named, so a caller can branch on it: a deadline is the run still
+			// going, and waiting again is a fair answer — hence retryable.
+			body := map[string]any{"code": "wait_timeout", "retryable": true}
+			if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				body = refusal("wait_cancelled")
+			}
 			return current, &Error{
 				Message: fmt.Sprintf("run %s was still %s when the wait was cut short", r.ID, current.Status),
+				Body:    body,
 				Wrapped: ctx.Err(),
 			}
 		case <-time.After(pollInterval):

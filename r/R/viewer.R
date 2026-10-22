@@ -19,8 +19,26 @@
 # works identically for a vector and a list, so a Shiny app's list and a
 # plumber route's vector reach the same code.
 #
+# **And a third shape, Shiny's, which is CGI's.** `session$request` is an
+# httpuv environment whose header names are `HTTP_X_TOFT_ACT_FOR` — upper case,
+# prefixed, underscores for hyphens — so a lowered `x-toft-act-for` never
+# matched, and in a Shiny app `viewer()` and `caller_role()` answered NULL for
+# every signed-in visitor, silently. `header_key` reduces all three spellings
+# to one.
+#
 # "" for absent rather than NULL, so every caller tests the same way.
+header_key <- function(x) {
+  x <- tolower(x)
+  x <- sub("^http_", "", x)
+  gsub("_", "-", x, fixed = TRUE)
+}
+
 find_header <- function(headers, name) {
+  # Shiny's request is an environment, and an environment cannot be indexed by
+  # position; as a list it can.
+  if (is.environment(headers)) {
+    headers <- as.list(headers, all.names = TRUE)
+  }
   if (is.null(headers) || length(headers) == 0) {
     return("")
   }
@@ -28,7 +46,7 @@ find_header <- function(headers, name) {
   if (is.null(nms)) {
     return("")
   }
-  i <- match(tolower(name), tolower(nms))
+  i <- match(header_key(name), header_key(nms))
   if (is.na(i)) {
     return("")
   }

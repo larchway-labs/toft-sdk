@@ -245,8 +245,11 @@ export class Mount {
     } catch (err) {
       if (err instanceof ToftError && err.status === 412) {
         throw refused("already_exists",
+          // `write`, not this.access: the store signs at the mapping's level
+          // *now*, and only `write` is refused an existing name — the cached
+          // level was the one the app started with.
           `${JSON.stringify(target)} already exists in ${JSON.stringify(this.name)}, and this ` +
-            `app's access (${this.access}) creates new objects only`,
+            "app's access there is `write`, which creates new objects only",
           { status: 412 },
         );
       }

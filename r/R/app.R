@@ -1,13 +1,25 @@
 #' What this app is, as the platform sees it
 #'
+#' Read once and kept for the life of the process, as the other three SDKs do:
+#' a page that asks for its base path and two capabilities on every view would
+#' otherwise spend its rate limit (60 a minute, burst 10) on the same answer.
+#' Pass \code{refresh = TRUE} where a capability may have changed since — an
+#' administrator switching viewer identity on, say.
+#'
+#' @param refresh Fetch again rather than answering from the cache.
 #' @return A list carrying the app's id, slug, and the capabilities this install
 #'   has granted it. A capability that is absent is absent — never present and
 #'   false — so an app can tell "switched off" from "this platform is older than
 #'   the feature".
 #' @export
-app_info <- function() {
-  toft_request("GET", "/api/v1/app/self")
+app_info <- function(refresh = FALSE) {
+  if (isTRUE(refresh) || is.null(.app_cache$view)) {
+    .app_cache$view <- toft_request("GET", "/api/v1/app/self")
+  }
+  .app_cache$view
 }
+
+.app_cache <- new.env(parent = emptyenv())
 
 #' Where this app is mounted
 #'

@@ -184,8 +184,11 @@ export class JobRun {
       current = await current.refresh();
       if (current.done) return current;
       if (deadline !== undefined && Date.now() >= deadline) {
+        // Named, so a caller can branch on it: the run is still going, and
+        // waiting again is a fair answer — hence retryable.
         throw new ToftError(
           `run ${this.id} was still ${current.status} after ${timeoutMs}ms`,
+          { body: { code: "wait_timeout", retryable: true } },
         );
       }
       await sleep(pollIntervalMs);

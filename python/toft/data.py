@@ -30,6 +30,7 @@ other writer's change survives instead of being overwritten.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any, Callable
@@ -152,15 +153,31 @@ class Data:
         has to be told apart from "there was an empty document" — that
         distinction is the one thing ``{}`` papers over.
         """
-        last: VersionConflict | None = None
+        last: ToftError | None = None
         for _ in range(max(1, attempts)):
-            current = self.read()
+            # A rate-limit refusal is waited out and tried again like a
+            # conflict: several writers at once each read and re-read, and on
+            # the app's limiter (burst 10) the lost write was the update's own,
+            # the one thing this method promises not to lose.
+            try:
+                current = self.read()
+            except ToftError as exc:
+                if exc.code != "rate_limited":
+                    raise
+                last = exc
+                time.sleep(exc.retry_after if exc.retry_after is not None else 1)
+                continue
             working = current.data if current.data is not None else {}
             changed = mutator(working)
             try:
                 return self.set(working if changed is None else changed, current.version)
             except VersionConflict as exc:
                 last = exc
+            except ToftError as exc:
+                if exc.code != "rate_limited":
+                    raise
+                last = exc
+                time.sleep(exc.retry_after if exc.retry_after is not None else 1)
         raise ToftError(
             f"app data changed under {attempts} attempts to update it — something "
             "is writing it continuously",

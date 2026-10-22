@@ -253,8 +253,10 @@ store_upload <- function(mount, source, name = NULL) {
                          query = store_query(mount))
   status <- send_signed(signed, data)
   if (status == 412) {
-    stop(toft_refusal("already_exists", sprintf("'%s' already exists in '%s', and this app's access (%s) creates new objects only",
-                 target, mount$name, mount$access)))
+    # `write`, not mount$access: the store signs at the mapping's level now,
+    # and only `write` is refused an existing name.
+    stop(toft_refusal("already_exists", sprintf("'%s' already exists in '%s', and this app's access there is `write`, which creates new objects only",
+                 target, mount$name)))
   }
   check_signed_status(status)
   invisible(target)

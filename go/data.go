@@ -199,9 +199,33 @@ func (d DataClient) UpdateN(ctx context.Context, mutate func(map[string]any) (ma
 		attempts = 1
 	}
 	var last error
+	// A rate-limit refusal is waited out and tried again like a conflict:
+	// several writers at once each read and re-read, and on the app's limiter
+	// (burst 10) the lost write was the update's own — the one thing this
+	// method promises not to lose.
+	limited := func(err error) bool {
+		e, ok := AsError(err)
+		if !ok || e.Code() != "rate_limited" {
+			return false
+		}
+		last = err
+		wait := e.RetryAfter
+		if wait <= 0 && !e.retryGiven {
+			wait = time.Second
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(wait):
+			return true
+		}
+	}
 	for i := 0; i < attempts; i++ {
 		current, err := d.Read(ctx)
 		if err != nil {
+			if limited(err) {
+				continue
+			}
 			return Document{}, err
 		}
 		working := current.Data
@@ -221,6 +245,9 @@ func (d DataClient) UpdateN(ctx context.Context, mutate func(map[string]any) (ma
 		}
 		var conflict *VersionConflictError
 		if !errors.As(err, &conflict) {
+			if limited(err) {
+				continue
+			}
 			return Document{}, err
 		}
 		last = err

@@ -104,9 +104,12 @@ func (m Mount) Upload(ctx context.Context, source, name string) (string, error) 
 	if _, err := sendSigned(ctx, signed, data); err != nil {
 		var e *Error
 		if errors.As(err, &e) && e.Status == http.StatusPreconditionFailed {
+			// `write`, not m.Access: the store signs at the mapping's level
+			// *now*, and only `write` is refused an existing name — the cached
+			// level was the one the app started with.
 			return "", &Error{Body: refusal("already_exists"), Status: e.Status, Message: fmt.Sprintf(
-				"%q already exists in %q, and this app's access (%s) creates new objects only",
-				target, m.Name, m.Access)}
+				"%q already exists in %q, and this app's access there is `write`, which creates new objects only",
+				target, m.Name)}
 		}
 		return "", err
 	}

@@ -11,11 +11,16 @@
 #' @param kind The integration kind, e.g. "slack" or "email".
 #' @param ... Fields for that kind — the platform documents each one. Passed
 #'   through as the message body.
+#' @param idempotency_key Optional. A retry carrying the same key is answered
+#'   with the first send rather than sent again. It travels as the
+#'   `Idempotency-Key` header, as in the other SDKs: the platform reads only
+#'   the header, and as a body field it was ignored without a word.
 #' @return Invisibly, the platform's response.
 #' @export
-notify <- function(kind, ...) {
+notify <- function(kind, ..., idempotency_key = NULL) {
   body <- list(...)
   invisible(toft_request("POST",
     paste0("/api/v1/app/notify/", utils::URLencode(kind, reserved = TRUE)),
-    body = body))
+    body = body,
+    extra_headers = list("Idempotency-Key" = idempotency_key)))
 }

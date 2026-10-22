@@ -122,9 +122,12 @@ class Mount:
             _send(signed, data)
         except ToftError as exc:
             if exc.status == 412:
+                # `write`, not self.access: the store signs at the mapping's
+                # level *now*, and only `write` is refused an existing name —
+                # the cached level was the one the app started with.
                 raise _refused("already_exists",
                     f"{target!r} already exists in {self.name!r}, and this app's access "
-                    f"({self.access}) creates new objects only", status=412) from None
+                    "there is `write`, which creates new objects only", status=412) from None
             raise
         return target
 

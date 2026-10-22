@@ -125,15 +125,30 @@ export class Data {
    */
   async update(mutator, { attempts = DEFAULT_ATTEMPTS } = {}) {
     let last;
+    // A rate-limit refusal is waited out and tried again like a conflict:
+    // several writers at once each read and re-read, and on the app's limiter
+    // (burst 10) the lost write was the update's own — the one thing this
+    // method promises not to lose.
+    const limited = async (err) => {
+      if (!(err instanceof ToftError) || err.code !== "rate_limited") throw err;
+      last = err;
+      await new Promise((r) => setTimeout(r, (err.retryAfter ?? 1) * 1000));
+    };
     for (let attempt = 0; attempt < attempts; attempt++) {
-      const current = await this.read();
+      let current;
+      try {
+        current = await this.read();
+      } catch (err) {
+        await limited(err);
+        continue;
+      }
       const working = current.data ?? {};
       const next = (await mutator(working, current)) ?? working;
       try {
         return await this.set(next, { ifVersion: current.version });
       } catch (err) {
-        if (!(err instanceof VersionConflict)) throw err;
-        last = err;
+        if (err instanceof VersionConflict) last = err;
+        else await limited(err);
       }
     }
     throw new ToftError(
