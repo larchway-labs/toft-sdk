@@ -431,6 +431,11 @@ export function store(name, options) {
  * ambiguous when there is genuinely more than one. `folder: ""` names the root.
  */
 export function storage(name, { folder } = {}) {
+  // Before the mounts are read, as the other three SDKs do: no name is the
+  // caller's mistake, not a resource that is missing.
+  if (!name) {
+    throw refused("invalid_name", "storage() needs the name an administrator gave the resource");
+  }
   const all = mounts();
   const named = all.filter((m) => m.name === name);
 
