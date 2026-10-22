@@ -155,7 +155,7 @@ function missing(name) {
       `given no app token — this is not a broken deploy. toft.data, toft.app and toft.notify ` +
       `belong to the process serving this app's requests, and a job serves none. Two ways ` +
       `round it: do this from the service process, or carry the result out of the run with ` +
-      `run.setResult(...) or run.writeOutputJson(...) and let an endpoint fold it in.`
+      `run.writeOutputJson(...) and let an endpoint fold it in.`
     );
   }
   return (

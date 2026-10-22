@@ -3,7 +3,8 @@
  *
  *   const me = toft.viewer(req.headers);          // Express, Fastify, Hono
  *   const run = await me.jobs.start("reconcile", { params: { month } });
- *   const recent = await me.jobs.mine("reconcile", { limit: 20 });
+ *   const recent = await me.jobs.mine({ job: "reconcile", limit: 20 });
+ *   return toft.jobs.respond(run, req);             // answer now; never wait here
  *
  * **The app never asserts who the viewer is.** What it relays is a blob the
  * platform signed over `(user, app, session)` on its way through the gateway.
@@ -30,7 +31,7 @@
  * broken.
  */
 
-import { Jobs } from "./jobs.js";
+import { Jobs, requestDeadline } from "./jobs.js";
 import { ToftError, transport } from "./transport.js";
 
 /**
@@ -39,7 +40,7 @@ import { ToftError, transport } from "./transport.js";
  * A per-render call must not become a request per render, and 60 seconds is the
  * honest trade rather than a tuned number. What it buys and what it costs: **a
  * role change takes effect in the app within the TTL, not instantly.** Where the
- * *platform* enforces — starting a job, running a scheduled task — it
+ * *platform* enforces — starting a job, firing a schedule — it
  * re-resolves live and this cache is irrelevant. Where the *app* enforces, the
  * app is the enforcer and the window is the app's to accept or shorten.
  * `who(headers, { refresh: true })` bypasses it.
@@ -76,8 +77,10 @@ export const ACT_FOR_HEADER = "X-Toft-Act-For";
  * administrator enables it for this app.
  */
 export class Viewer {
-  constructor(blob) {
-    this.jobs = new Jobs({ [ACT_FOR_HEADER]: blob });
+  constructor(blob, { requestDeadline = null } = {}) {
+    // The job surface, with this viewer attached — and the request it came in
+    // on, so a wait() that would outlive that request rejects.
+    this.jobs = new Jobs({ [ACT_FOR_HEADER]: blob }, { requestDeadline });
     // Not enumerable, so a console.log of a Viewer cannot spill a bearer
     // credential for somebody's session into a log line.
     Object.defineProperty(this, "_blob", { value: blob, enumerable: false });
@@ -175,6 +178,10 @@ export function resetIdentityCache() {
  *
  * Accepts anything header-shaped: a plain object, Express's `req.headers`, a
  * `Headers` instance, a `Map`.
+ *
+ * The request's `X-Toft-Request-Deadline` is kept too, and every run started or
+ * read through this viewer carries it: that is what lets `run.wait()` refuse to
+ * outlive the request (`would_outlive_request`).
  */
 export function viewer(headers) {
   const blob = findHeader(headers, ACT_FOR_HEADER);
@@ -187,13 +194,20 @@ export function viewer(headers) {
         `was reached outside the gateway — a health check, a direct port, or a local ` +
         `development server. Use toft.jobs to act as the app itself, ` +
         `deliberately, rather than treating this as the same thing.`,
-      { body: { code: "no_viewer", retryable: false } },
+      {
+        body: {
+          code: "no_viewer",
+          retryable: false,
+          hint: "use toft.jobs.start(...) to start it as the app",
+        },
+      },
     );
   }
-  return new Viewer(blob);
+  return new Viewer(blob, { requestDeadline: requestDeadline(headers) });
 }
 
-function findHeader(headers, name) {
+/** One header out of whatever the framework calls its header mapping, or "". */
+export function findHeader(headers, name) {
   if (!headers) return "";
   const wanted = name.toLowerCase();
 

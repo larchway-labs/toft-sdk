@@ -27,18 +27,18 @@ import (
 // exposing it to everyone who can open the page and asking the platform who the
 // viewer is. The three person-words are the ones the Sharing tab granted from —
 // "owner", "editor", "viewer" — plus "anonymous" for a visitor who is not signed
-// in, "system" for Toft firing a scheduled task, and "app" for the app's own
+// in, "system" for Toft acting on a schedule, and "app" for the app's own
 // credential.
 //
 // **A role is not an identity and it is not domain authority.** It says what
-// this caller may do to *this deployment in Toft* — redeploy it, edit its
-// jobs, change its schedules. "Owners may approve invoices" is a rule about
+// this caller may do to *this deployment in Toft* — redeploy it, run its jobs,
+// pause its schedules. "Owners may approve invoices" is a rule about
 // invoices, and belongs on a group: see [Identity] and [Who]. Nothing here names
 // a person, and nothing here is a substitute for [Who] when the question is who.
 //
 // **This is the app's decision, not the platform's.** Toft enforces nothing
-// new: it tells you, you refuse. Where the *platform* decides — starting a job,
-// running a scheduled task — it re-resolves live and never reads this header.
+// new: it tells you, you refuse. Where the *platform* decides — attributing a
+// run, listing a viewer's runs — it re-resolves live and never reads this header.
 //
 // **A missing or unverifiable header is [RoleUnknown], and [Caller.AtLeast] is
 // false for it.** Absent key, absent header, bad signature and expired all give
@@ -80,9 +80,9 @@ const (
 	RoleViewer = "viewer"
 	RoleEditor = "editor"
 	RoleOwner  = "owner"
-	// RoleSystem is Toft acting on its own: today, a scheduled task firing
-	// on its schedule. A *manual* firing of the same schedule carries the role
-	// of whoever pressed the button.
+	// RoleSystem is Toft acting on its own: a job's schedule firing, which a
+	// job reads as its [Run.TriggerRole]. A person starting the same job
+	// carries their own role.
 	RoleSystem = "system"
 	// RoleApp is the app's own credential — an app key presented at the
 	// gateway, and an app-started job's callback.
@@ -157,9 +157,8 @@ func (c Caller) IsPerson() bool {
 	return ok
 }
 
-// IsSystem reports whether this request is Toft firing a scheduled task on
-// its schedule. A manual firing of the same schedule is the person who pressed
-// the button, not this.
+// IsSystem reports whether this caller is Toft acting on a schedule rather
+// than a person or the app.
 func (c Caller) IsSystem() bool { return c.Role == RoleSystem }
 
 // SignedIn reports whether this caller is *above anonymous on the person

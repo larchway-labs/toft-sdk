@@ -40,6 +40,9 @@ from .session import transport
 
 # How many times update() re-reads and re-applies before giving up.
 DEFAULT_ATTEMPTS = 5
+# How many rate-limit refusals one update waits out. Counted apart from
+# ``attempts``, which are conflicts: a drained limiter is a queue, not a writer.
+RATE_LIMIT_WAITS = 30
 
 
 class VersionConflict(ToftError):
@@ -154,34 +157,45 @@ class Data:
         distinction is the one thing ``{}`` papers over.
         """
         last: ToftError | None = None
-        for _ in range(max(1, attempts)):
-            # A rate-limit refusal is waited out and tried again like a
-            # conflict: several writers at once each read and re-read, and on
-            # the app's limiter (burst 10) the lost write was the update's own,
-            # the one thing this method promises not to lose.
+        conflicts = waits = 0
+        attempts = max(1, attempts)
+
+        def limited(exc: ToftError) -> bool:
+            # A rate-limit refusal is waited out and does not spend an attempt:
+            # several writers at once each read and re-read, and on the app's
+            # limiter (burst 10) the lost write was the update's own, the one
+            # thing this method promises not to lose.
+            nonlocal last, waits
+            if exc.code != "rate_limited" or waits >= RATE_LIMIT_WAITS:
+                return False
+            last = exc
+            waits += 1
+            time.sleep(exc.retry_after if exc.retry_after is not None else 1)
+            return True
+
+        while conflicts < attempts:
             try:
                 current = self.read()
             except ToftError as exc:
-                if exc.code != "rate_limited":
-                    raise
-                last = exc
-                time.sleep(exc.retry_after if exc.retry_after is not None else 1)
-                continue
+                if limited(exc):
+                    continue
+                raise
             working = current.data if current.data is not None else {}
             changed = mutator(working)
             try:
                 return self.set(working if changed is None else changed, current.version)
             except VersionConflict as exc:
                 last = exc
+                conflicts += 1
             except ToftError as exc:
-                if exc.code != "rate_limited":
-                    raise
-                last = exc
-                time.sleep(exc.retry_after if exc.retry_after is not None else 1)
+                if limited(exc):
+                    continue
+                raise
         raise ToftError(
             f"app data changed under {attempts} attempts to update it — something "
             "is writing it continuously",
             status=last.status if last else None,
+            retry_after=last.retry_after if last else None,
             body=last.body if last else None,
         )
 

@@ -5,7 +5,7 @@
  *
  *   import toft from "@larchway/toft";
  *
- *   await toft.app.slug();                  // who am I
+ *   toft.app.slug;                          // who am I — plain facts are properties
  *   await toft.app.can("email");            // what did an administrator attach
  *
  *   toft.scratchDir("uploads");             // ephemeral, per app, no network
@@ -25,8 +25,9 @@
  *
  *   await toft.jobs.start("reconcile", { params });     // as the app
  *   const me = toft.viewer(req.headers);                // as a person
- *   await me.jobs.start("reconcile", { params });
- *   await me.jobs.mine("reconcile", { limit: 20 });
+ *   const run = await me.jobs.start("reconcile", { params });
+ *   return toft.jobs.respond(run, req);                 // 202, or 303 to its status page
+ *   await me.jobs.mine({ job: "reconcile", limit: 20 });
  *
  *   const who = await toft.who(req.headers);            // who is looking; null if nobody
  *   if (who?.role === "owner" || who?.isAdmin) renderAdminTab();
@@ -35,15 +36,16 @@
  *   if (!c.atLeast(toft.ROLE_EDITOR)) return res.status(403).end();
  *
  *   toft.run                                // inside a job; null everywhere else
- *   const task = toft.task(req.headers);    // a scheduled firing; else null
- *   await task?.log("read 1,204 rows");   // a log the platform cannot capture
  *
  * **Background work is a different entrypoint of this same app.** `jobs.start`
  * runs a command `toft.toml` declares, from the same release, as an
  * isolated workload with a memory limit, a deadline and a durable record — in
  * *both* execution modes, because moving twelve minutes and six gigabytes out
  * of the app's own process is the point rather than a side effect. It never
- * blocks on the work.
+ * blocks on the work, and a request handler answers with
+ * `toft.jobs.respond(run, req)` rather than waiting: `wait()` is for scripts
+ * and jobs, and rejects inside a request it would outlive. Params are the only
+ * input, and a run is never retried behind anyone's back. See jobs.js.
  *
  * **Two objects, and which one you call is the decision.** `toft.jobs` is the app
  * acting as itself; `toft.viewer(headers).jobs` is the app acting for the person
@@ -60,24 +62,6 @@
  * gap to close and not a runtime state to branch on. A request with nobody on
  * it (anonymous, or an API key) is `null` whatever the setting;
  * `toft.app.can("viewer.identity")` reads the setting itself.
- *
- * **A scheduled task's log is the one thing the platform cannot capture for
- * you.** Toft triggers a task by making an HTTP request to a path you
- * published; it owns no process, so your prints land in the app's own stream
- * interleaved with every other request. `toft.task(req.headers)` is that firing —
- * `null` on an ordinary visit, so one endpoint can serve both a schedule and a
- * person — and `task.log(...)` is what makes a run's log exist. Worth adding to
- * anything that might outlive the timeout: a run that never answers is recorded
- * as a failure with nothing else in it.
- *
- * **A failed run may be retried, and you configure that in Toft, not
- * here.** Retries are off by default and switched on per task or job — on the
- * app's Automation tab, or as `retries = N` in `toft.toml`. What the SDK
- * does is keep the chain from being your problem: a run the platform has queued
- * another attempt at is not `done`, and `refresh()` follows it, so `wait()`
- * gives you the outcome of the work rather than of the first try at it. Only
- * runs nobody is waiting on are eligible — a schedule, and what the app started
- * — never one somebody kicked off from the Toft panel.
  *
  * **Off-platform it throws rather than pretending.** Every call that needs the
  * platform names the environment variable that is missing. There is deliberately
@@ -115,7 +99,14 @@ import {
   caller,
 } from "./caller.js";
 import { Data, Document, VersionConflict } from "./data.js";
-import { JobRun, Jobs, QueueFull, TERMINAL_STATUSES } from "./jobs.js";
+import {
+  JobRun,
+  Jobs,
+  QueueFull,
+  REQUEST_DEADLINE_HEADER,
+  TERMINAL_STATUSES,
+  respond,
+} from "./jobs.js";
 import { Notify, Send } from "./notify.js";
 import {
   APP_CONTRACT_VERSION,
@@ -125,7 +116,6 @@ import {
   resetTransport,
   transport,
 } from "./transport.js";
-import { CRON_HEADER, RUN_HEADER, SCHEDULE_HEADER, Task, task } from "./task.js";
 import {
   ACT_FOR_HEADER,
   IDENTITY_TTL_MS,
@@ -184,56 +174,41 @@ async function runnerRequest(baseUrl, token, method, path, body, timeoutMs = DEF
 }
 
 /**
- * What a failed input read means, in the two cases that are not "it broke".
+ * The job's own view of itself: who started it, its params, its deadline;
+ * report progress, log, write output.
  *
- * Written out because the failures are indistinguishable at the HTTP layer and
- * the fixes are opposite: one is a job asking for something it was never given,
- * the other is a job that took too long. The same two sentences the Python SDK
- * raises.
+ *   const r = toft.run;                         // null outside a job
+ *   const region = r.params.region;             // typed by toml: ints are numbers
+ *   await r.progress(40, "reading ledgers");    // the status page shows both
+ *   r.log("12,044 rows");                       // stdout; the runner ships it
+ *   await r.writeOutputJson({ rows: 12044 });   // presigned PUT, both modes
+ *
+ * **Params are the only input.** There is no payload: anything bigger than a
+ * param belongs in the app's own storage, and the param names where.
+ * `writeOutput` is the one durable result channel, and it outlives scratch.
  */
-/** The code for the two refusals inputRefusal() explains; any other status is left to the status rule. */
-function inputRefusalBody(status) {
-  if (status === 404) return { code: "input_not_given", retryable: false };
-  if (status === 403 || status === 410) return { code: "input_expired", retryable: false };
-  return undefined;
-}
-
-function inputRefusal(status) {
-  if (status === 404) {
-    return (
-      "this run was given no payload — TOFT_INPUT_URI points at an object that was " +
-      "never written. A run started with parameters alone has no input; read run.params " +
-      "for those. (A current platform leaves run.inputUri empty in that case, so an " +
-      "install still exporting it is older than this SDK.)"
-    );
-  }
-  if (status === 403 || status === 410) {
-    return (
-      "this run's payload is no longer readable: the presigned link the platform minted " +
-      "for it has expired. Read the input at the start of a run rather than hours into one."
-    );
-  }
-  return `reading this run's input failed: HTTP ${status}`;
-}
-
-/** The job's own view of itself. */
 export class Run {
   constructor({ baseUrl, token, id } = {}) {
     this._baseUrl = baseUrl ?? process.env.TOFT_API_URL;
     this._token = token ?? process.env.TOFT_JOB_TOKEN;
     this.id = id ?? process.env.TOFT_RUN_ID;
-    this.inputUri = process.env.TOFT_INPUT_URI ?? "";
+    /** The job this run is of — its `[jobs.<name>]` in `toft.toml`. */
+    this.job = process.env.TOFT_JOB_NAME ?? "";
+    /**
+     * The run this one re-ran, or null. A rerun carries the same params; a job
+     * that must not repeat a side effect checks this.
+     */
+    this.rerunOf = process.env.TOFT_RERUN_OF || null;
     this.outputUri = process.env.TOFT_OUTPUT_URI ?? "";
     /**
-     * `trigger` is *how* this run started: "cron", "manual", "api" or "app".
-     * `triggerRole` is *who* — one of the ROLE_* words, `"system"` for a
-     * schedule firing on its schedule, `"app"` for the app starting work for
-     * itself, and `"unknown"` where the platform did not say.
+     * `trigger` is *how* this run started — `app`, `viewer`, `cli`, `schedule`
+     * or `ui`, the run's `startedBy`. `triggerRole` is *who* — one of the ROLE_*
+     * words, `"system"` for a schedule firing on its schedule, `"app"` for the
+     * app starting work for itself, and `"unknown"` where the platform did not
+     * say.
      *
-     * The pair is the point. "manual" tells a report job nothing about whether
-     * to include the private columns; "manual" plus "viewer" does. Both have
-     * been recorded on every run since jobs existed and neither had a name in
-     * this SDK until now.
+     * The pair is the point. "ui" tells a report job nothing about whether to
+     * include the private columns; "ui" plus "viewer" does.
      *
      * **The role is today's, not the day the run was queued.** It is derived
      * from the run's actor when the workload starts, so somebody demoted in
@@ -257,6 +232,12 @@ export class Run {
     return new Run();
   }
 
+  /** The contract's name for `trigger`. */
+  get startedBy() {
+    return this.trigger;
+  }
+
+  /** The run's params, typed as `toft.toml` declares them. */
   get params() {
     const raw = process.env.TOFT_PARAMS;
     return raw ? JSON.parse(raw) : {};
@@ -278,51 +259,33 @@ export class Run {
     return process.env.TOFT_SCHEDULED_FOR || null;
   }
 
-  /** Report how far along this run is, 0–100. */
-  async progress(percent) {
-    await runnerRequest(this._baseUrl, this._token, "POST", "/api/v1/runner/progress", {
-      version: CONTRACT_VERSION,
-      percent: Math.round(percent),
-    });
-  }
-
-  /** Record the run's structured result. */
-  async setResult(result) {
-    await runnerRequest(this._baseUrl, this._token, "POST", "/api/v1/runner/result", {
-      version: CONTRACT_VERSION,
-      result,
-      exit_code: 0,
-      // The run is still going; only the runner's own report at exit ends it.
-      record_only: true,
-    });
+  /**
+   * When the platform stops this run, or `null` where it did not say. A job
+   * with a long loop checks it and stops cleanly, rather than being stopped
+   * mid-write.
+   */
+  get deadline() {
+    const raw = process.env.TOFT_DEADLINE;
+    return raw ? new Date(raw) : null;
   }
 
   /**
-   * Fetch the payload this run was given, over a presigned URL — a job holds
-   * no object-store credential, because one that could read this run's input
-   * could read every other app's.
+   * Report how far along this run is, 0–100, and optionally what it is doing —
+   * a few words the status page shows under the bar.
    */
-  /**
-   * Fetch the payload this run was given, or `null` when it was given none.
-   *
-   * **A refusal here is named rather than relayed.** The platform mints this URL
-   * only for a run that was actually given a payload, so a 404 means an install
-   * that predates that rule; a 403 or 410 is the link's six-hour window having
-   * closed under a very long run. Both used to surface as `reading input: Not
-   * Found` — a failure an author could not tell from a store that was down.
-   */
-  async readInput() {
-    if (!this.inputUri) return null;
-    const resp = await fetch(this.inputUri);
-    if (!resp.ok) {
-      throw new ToftError(inputRefusal(resp.status), { status: resp.status, body: inputRefusalBody(resp.status) });
-    }
-    return resp.arrayBuffer();
+  async progress(percent, message) {
+    const body = { version: CONTRACT_VERSION, percent: Math.round(percent) };
+    if (message) body.message = String(message);
+    await runnerRequest(this._baseUrl, this._token, "POST", "/api/v1/runner/progress", body);
   }
 
-  async readInputJson() {
-    const buf = await this.readInput();
-    return buf && buf.byteLength ? JSON.parse(new TextDecoder().decode(buf)) : null;
+  /**
+   * Write one line to this run's log. Nothing but a write to stdout (stderr
+   * with `{ error: true }`) — the runner ships both — and here so a job does
+   * not have to know that.
+   */
+  log(message, { error = false } = {}) {
+    (error ? process.stderr : process.stdout).write(`${message}\n`);
   }
 
   /**
@@ -503,17 +466,17 @@ export {
   Mount,
   Notify,
   QueueFull,
+  REQUEST_DEADLINE_HEADER,
   Send,
   TERMINAL_STATUSES,
-  Task,
   VersionConflict,
   Viewer,
   mounts,
   resetIdentityCache,
+  respond,
   resetTransport,
   storage,
   store,
-  task,
   transport,
   viewer,
   who,
@@ -528,7 +491,6 @@ export default {
   viewer,
   who,
   caller,
-  task,
   storage,
   store,
   mounts,
@@ -545,9 +507,6 @@ export default {
   ROLE_OWNER,
   ROLE_SYSTEM,
   ROLE_APP,
-  CRON_HEADER,
-  RUN_HEADER,
-  SCHEDULE_HEADER,
   ToftError,
   QueueFull,
   VersionConflict,

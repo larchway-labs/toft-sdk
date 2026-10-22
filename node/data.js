@@ -42,6 +42,9 @@ export class VersionConflict extends ToftError {
 }
 
 /** How many times `update()` re-reads and re-applies before giving up. */
+// How many rate-limit refusals one update waits out, counted apart from its
+// attempts, which are conflicts.
+const RATE_LIMIT_WAITS = 30;
 const DEFAULT_ATTEMPTS = 5;
 
 /** One read of the document, with the platform's two facts about it. */
@@ -125,16 +128,21 @@ export class Data {
    */
   async update(mutator, { attempts = DEFAULT_ATTEMPTS } = {}) {
     let last;
-    // A rate-limit refusal is waited out and tried again like a conflict:
+    let conflicts = 0;
+    let waits = 0;
+    // A rate-limit refusal is waited out and does not spend an attempt:
     // several writers at once each read and re-read, and on the app's limiter
     // (burst 10) the lost write was the update's own — the one thing this
-    // method promises not to lose.
+    // method promises not to lose. The waits have a bound of their own; past
+    // it the refusal itself is thrown, naming the limiter.
     const limited = async (err) => {
-      if (!(err instanceof ToftError) || err.code !== "rate_limited") throw err;
-      last = err;
+      if (!(err instanceof ToftError) || err.code !== "rate_limited" || waits >= RATE_LIMIT_WAITS) {
+        throw err;
+      }
+      waits++;
       await new Promise((r) => setTimeout(r, (err.retryAfter ?? 1) * 1000));
     };
-    for (let attempt = 0; attempt < attempts; attempt++) {
+    while (conflicts < attempts) {
       let current;
       try {
         current = await this.read();
@@ -147,8 +155,10 @@ export class Data {
       try {
         return await this.set(next, { ifVersion: current.version });
       } catch (err) {
-        if (err instanceof VersionConflict) last = err;
-        else await limited(err);
+        if (err instanceof VersionConflict) {
+          last = err;
+          conflicts++;
+        } else await limited(err);
       }
     }
     throw new ToftError(

@@ -3,7 +3,9 @@
  *
  * `toft.app` answers two different kinds of question and it is worth keeping them
  * apart. *Who am I* — id, slug, name, execution mode — is for the app's own
- * logs and for building links back to itself. *What may I do* — `can()` — is
+ * logs and for building links back to itself. `id` and `slug` are synchronous
+ * properties, because the platform puts them in the environment; the rest are
+ * one cached request, and async. *What may I do* — `can()` — is
  * the one that changes how an app should be written:
  *
  *   if (await toft.app.can("email")) { … } else { renderNotEnabledNotice(); }
@@ -45,14 +47,23 @@ export class App {
     return this;
   }
 
-  async id() {
-    return (await this.#load()).id ?? "";
+  /**
+   * This app's id and slug, synchronously. Plain facts, so plain properties:
+   * as `async slug()` they were a Promise, and a template literal rendered
+   * `[object Promise]` into every link built from one. The platform injects
+   * both into the process (`TOFT_APP_ID`, `TOFT_APP_SLUG`), so neither needs a
+   * request; off-platform they fall back to a view already fetched, then "".
+   * `await toft.app.slug` still works, because awaiting a string is the string.
+   */
+  get id() {
+    return process.env.TOFT_APP_ID || this.#view?.id || "";
   }
 
-  async slug() {
-    return (await this.#load()).slug ?? "";
+  get slug() {
+    return process.env.TOFT_APP_SLUG || this.#view?.slug || "";
   }
 
+  /** The display name — not in the environment, so a request, once. */
   async name() {
     return (await this.#load()).name ?? "";
   }

@@ -86,8 +86,7 @@ def _missing(name: str) -> str:
             f"requests, and a job serves none (toft.notify works from a job). Two "
             f"ways round it: do this "
             f"from the service process, or carry the result out of the run with "
-            f"run.set_result(...) or run.write_output_json(...) and let an "
-            f"endpoint fold it in."
+            f"run.write_output_json(...) and let an endpoint fold it in."
         )
     return (
         f"{name} is not set. This call needs the environment Toft injects "

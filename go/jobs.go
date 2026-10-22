@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -14,13 +16,19 @@ import (
 //
 // This is an app starting **a different entrypoint of itself**. Same repo, same
 // release, same storage, different command — toft.toml declares it, and the
-// platform runs it as an isolated workload with a memory limit, a deadline and a
+// platform runs it as its own process with a memory limit, a deadline and a
 // durable record:
 //
-//	// The app acting as itself — no viewer, no actor.
-//	run, err := toft.Jobs.Start(ctx, "reconcile", toft.StartOptions{
-//		Params: map[string]any{"month": "2026-03"},
-//	})
+//	func export(w http.ResponseWriter, r *http.Request) {
+//		run, err := toft.Jobs.Start(r.Context(), "reconcile", toft.StartOptions{
+//			Params: map[string]any{"month": "2026-03"},
+//		})
+//		if err != nil {
+//			http.Error(w, err.Error(), http.StatusBadGateway)
+//			return
+//		}
+//		toft.Jobs.Respond(w, r, run) // 202 + Location, or the live status page
+//	}
 //
 //	// The app acting for whoever is looking at the page.
 //	me, err := toft.ViewerFor(r.Header)
@@ -32,11 +40,13 @@ import (
 // — a run sliding quietly out of somebody's name and into nobody's, noticed at
 // the next audit if at all.
 //
-// **Nothing here blocks on the work.** [JobsClient.Start] returns as soon as the
-// run is queued. [JobRun.Wait] exists, is for scripts and one-shot tools, and is
-// never what Start does — an isolated workload's cold start alone is measured in
-// tens of seconds, so a call that could return a result would be a call that
-// sometimes holds an HTTP handler for a minute.
+// **A handler responds; it never waits.** [JobsClient.Start] returns as soon as
+// the run is queued, and [JobsClient.Respond] answers the browser with the run's
+// status page. [JobRun.Wait] is for scripts and jobs: inside a request the
+// gateway cuts the connection at its deadline, and a handler that waited past
+// it gave its caller a bare 504 while the work went on unseen. So a wait that
+// cannot finish before the request's deadline is refused at once with
+// would_outlive_request rather than discovered at the gateway.
 //
 // **A repeated start is not a second run.** The platform derives an idempotency
 // key from the app, the job, the parameters and the resolved person, and a start
@@ -50,132 +60,195 @@ import (
 // act-for token; the platform resolves it and filters on the person it resolved.
 // The app gets that person's runs and still never learns who they are.
 //
-// **A run you start may be retried, and this object follows the chain.** Retries
-// are off by default and switched on per job — on the app's Automation tab, or as
-// retries = N in toft.toml — never in code here. What the SDK does is make
-// sure the chain is not something you have to know about:
-//
-//   - [JobRun.Done] is **false** on a failed run the platform has already queued
-//     another attempt at. The work is still in progress, in a row with a
-//     different id, and reporting that as finished would be a failure announced
-//     for something about to succeed.
-//   - [JobRun.Refresh] returns the *newer attempt* when there is one, so
-//     [JobRun.Wait] resolves on the outcome of the work rather than of the first
-//     try at it.
-//   - [JobRun.Attempt] is which try you are looking at, and [JobRun.RetriedBy]
-//     names the successor when one exists. Read them when the distinction
-//     matters; ignore them and the defaults are right.
-//
-// Which runs are eligible is the platform's rule, not this library's: a schedule
-// and anything the app started — including a run started on a viewer's behalf,
-// since the app fired it and did not block on it. A run somebody started from the
-// Toft panel is never retried behind them, and neither is one that ran out
-// of time or memory, because a second attempt would end the same way.
+// **A run ends exactly once.** Nothing re-runs by itself: a failure is one run
+// with its reason in [JobRun.FailureReason], and running it again is the app
+// calling Start again — deciding whether and when — or a person pressing Run
+// again in Toft.
 
 const (
 	jobsPath    = "/api/v1/app/jobs"
 	jobRunsPath = "/api/v1/app/job-runs"
+
+	// RequestDeadlineHeader is when the request an app is serving will be cut
+	// off, RFC 3339. The gateway sets it on every request it forwards and on
+	// nothing else, so its presence is also how the SDK knows it is serving one.
+	RequestDeadlineHeader = "X-Toft-Request-Deadline"
 )
 
-// terminalRunStatuses will not change again. Polling stops here.
-var terminalRunStatuses = map[string]bool{
-	"succeeded": true, "failed": true, "cancelled": true,
-	"timed_out": true, "resource_exceeded": true, "infrastructure_error": true,
-}
+// The eight words a run's status takes. Everything but queued and running is
+// final.
+const (
+	RunQueued      = "queued"
+	RunRunning     = "running"
+	RunSucceeded   = "succeeded"
+	RunFailed      = "failed"
+	RunTimedOut    = "timed_out"
+	RunOutOfMemory = "out_of_memory"
+	RunCancelled   = "cancelled"
+	RunSkipped     = "skipped"
+)
+
+// pollInterval is how often Wait and Tail re-read a run. A variable so the
+// tests need not sleep for it.
+var pollInterval = 2 * time.Second
 
 // JobRun is a run, and everything an app can do with one.
 //
 // Returned by [JobsClient.Start] before the work begins — which is the point.
 // Every method is a fresh read or an action; nothing is cached, because a run's
-// whole purpose is to change while you are not looking.
+// whole purpose is to change while you are not looking. The JSON names are the
+// platform's, so a JobRun encodes back into the body [JobsClient.Respond] sends.
 type JobRun struct {
-	ID       string `json:"id"`
-	Status   string `json:"status"`
-	JobName  string `json:"job_name"`
-	Progress int    `json:"progress"`
+	ID     string `json:"id"`
+	Job    string `json:"job"`
+	Status string `json:"status"`
 
-	// QueuePosition is 1-based while pending and 0 once the run starts. "3rd in
+	// StartedBy is how the run began: "app", "viewer", "cli", "schedule" or
+	// "ui". Never *which* person: an app does not learn that.
+	StartedBy string `json:"started_by"`
+
+	// RerunOf is the run this one repeats, when a person pressed Run again.
+	RerunOf string `json:"rerun_of,omitempty"`
+
+	// Params are the run's declared parameters with defaults applied — its only
+	// input.
+	Params map[string]any `json:"params,omitempty"`
+
+	// ScheduledFor is the instant this run is for — its schedule's tick, or one a
+	// person named — and nil when nobody gave one.
+	ScheduledFor *time.Time `json:"scheduled_for,omitempty"`
+	QueuedAt     time.Time  `json:"queued_at"`
+	StartedAt    *time.Time `json:"started_at,omitempty"`
+	FinishedAt   *time.Time `json:"finished_at,omitempty"`
+	// Deadline is when the run will be stopped if it is still going.
+	Deadline *time.Time `json:"deadline,omitempty"`
+
+	Progress        int    `json:"progress"`
+	ProgressMessage string `json:"progress_message,omitempty"`
+
+	// QueuePosition is 1-based while queued and 0 once the run starts. "3rd in
 	// line" is most of what somebody wants when they ask about a queue.
-	QueuePosition int `json:"queue_position"`
+	QueuePosition int `json:"queue_position,omitempty"`
+
+	HasOutput bool `json:"has_output"`
+	ExitCode  *int `json:"exit_code,omitempty"`
+	// FailureReason is why a run that did not succeed ended, in words —
+	// "exit 3: connection refused", "timed out after 45m", "stopped at 1024 MB".
+	FailureStage  string `json:"failure_stage,omitempty"`
+	FailureReason string `json:"failure_reason,omitempty"`
+	PeakMemoryMB  *int   `json:"peak_memory_mb,omitempty"`
+
+	// StatusURL is the run's live status page on the app's own origin, which
+	// [JobsClient.Respond] points a browser at. LogsURL is its log on the app
+	// surface.
+	StatusURL string `json:"status_url"`
+	LogsURL   string `json:"logs_url"`
 
 	// Deduplicated is true when this start returned a run that already existed.
-	Deduplicated bool `json:"deduplicated"`
-
-	// StartedByViewer is true when the run was started on a person's behalf
-	// rather than by the app itself. Never says *which* person: an app does not
-	// learn that.
-	StartedByViewer bool `json:"started_by_viewer"`
-
-	HasOutput     bool   `json:"has_output"`
-	ExitCode      *int   `json:"exit_code"`
-	FailureStage  string `json:"failure_stage"`
-	FailureReason string `json:"failure_reason"`
-
-	// Result is the structured result the job recorded with [Run.SetResult]. The
-	// smallest of the result channels and the right one for what most internal
-	// tools produce: counts, a summary, a few hundred rows.
-	Result any `json:"result"`
-
-	// Attempt is which try this run is, and RetriedBy names the run that
-	// superseded it when the platform queued another attempt. A failed run with
-	// RetriedBy set is not the end of the story — see [JobRun.Wait].
-	Attempt   int    `json:"attempt"`
-	RetriedBy string `json:"retried_by"`
-	// ScheduledFor is the instant this run is for — its schedule's tick, or
-	// one a person named — as RFC 3339, or "" when nobody gave one.
-	ScheduledFor string `json:"scheduled_for,omitempty"`
+	Deduplicated bool `json:"deduplicated,omitempty"`
 
 	headers map[string]string
+	// requestDeadline is the deadline of the request whose viewer started or
+	// read this run, so Wait can refuse to outlive it without being told twice.
+	requestDeadline time.Time
 }
 
 // Done reports whether this run will change again.
-//
-// A failed run the platform has already queued another attempt at is *not* done:
-// the work is still in progress, in a row with a different id. Reading only this
-// row's status there would report a failure for something that is about to
-// succeed.
-func (r JobRun) Done() bool { return terminalRunStatuses[r.Status] && r.RetriedBy == "" }
+func (r JobRun) Done() bool { return r.Status != "" && r.Status != RunQueued && r.Status != RunRunning }
 
 // Succeeded reports the happy terminal status.
-func (r JobRun) Succeeded() bool { return r.Status == "succeeded" }
+func (r JobRun) Succeeded() bool { return r.Status == RunSucceeded }
 
-// OutOfResources reports a run killed for exceeding its limits, rather than one
+// OutOfResources reports a run stopped for passing its limits, rather than one
 // that crashed.
 //
 // Worth telling apart because the fix is different: a bigger limit or less work,
 // not a code change.
 func (r JobRun) OutOfResources() bool {
-	return r.Status == "resource_exceeded" || r.Status == "timed_out"
+	return r.Status == RunOutOfMemory || r.Status == RunTimedOut
 }
 
 // Refresh re-reads this run and returns a fresh handle.
-//
-// **It follows a retry.** If the platform has queued another attempt at this
-// work, the handle you get back is that attempt — same chain, newer row. An app
-// that started a run and waits on it should see the outcome of the work, not of
-// the first try at it; [JobRun.Attempt] is there for anyone who needs the
-// distinction.
 func (r JobRun) Refresh(ctx context.Context) (JobRun, error) {
 	run, err := readRun(ctx, r.ID, r.headers)
-	if err != nil || run.RetriedBy == "" {
-		return run, err
-	}
-	return readRun(ctx, run.RetriedBy, r.headers)
+	run.requestDeadline = r.requestDeadline
+	return run, err
 }
 
-// Wait blocks until the run finishes.
+// WaitOptions bounds a [JobRun.Wait].
+type WaitOptions struct {
+	// Timeout is how long to wait; zero is until the run ends. Inside a request
+	// it must fit before the request's deadline — see [JobRun.Wait].
+	Timeout time.Duration
+
+	// Request, or Header, is the request this code is serving, when it is
+	// serving one. Either carries the gateway's X-Toft-Request-Deadline, which
+	// is what lets Wait refuse a wait the gateway would cut short. A run started
+	// through [ViewerFor] already carries it.
+	Request *http.Request
+	Header  http.Header
+
+	// PollInterval is how often to re-read the run; zero is two seconds.
+	PollInterval time.Duration
+}
+
+// Wait blocks until the run ends and returns it in its final state.
 //
-// For one-shot tools and scripts. **Never call this on an HTTP handler's path** —
-// that is the twelve-minute block this whole feature exists to remove. Cancel the
-// context to stop waiting; the run keeps going.
-func (r JobRun) Wait(ctx context.Context, pollInterval time.Duration) (JobRun, error) {
-	if pollInterval <= 0 {
-		pollInterval = 2 * time.Second
+// For scripts, one-shot tools and jobs. **Inside a request it is refused at
+// once** — code would_outlive_request, not retryable — when it has no Timeout,
+// or a Timeout past what is left of the request: the gateway would cut the
+// connection at its deadline and the browser would get a bare 504. The fix is
+// in the refusal's hint: respond with [JobsClient.Respond] and let the browser
+// follow the run. A short wait that fits is allowed.
+//
+// A Timeout that runs out is named wait_timeout and is retryable, because the
+// run is still going and waiting again is fair. Cancel the context to stop
+// waiting; the run keeps going either way.
+func (r JobRun) Wait(ctx context.Context, opts WaitOptions) (JobRun, error) {
+	deadline := r.requestDeadline
+	if opts.Request != nil {
+		deadline = requestDeadline(opts.Request.Header)
+	} else if opts.Header != nil {
+		deadline = requestDeadline(opts.Header)
 	}
+	if !deadline.IsZero() {
+		left := time.Until(deadline)
+		if opts.Timeout <= 0 || opts.Timeout >= left {
+			return r, wouldOutliveRequest(r, opts.Timeout, left)
+		}
+	}
+	if opts.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, opts.Timeout)
+		defer cancel()
+	}
+	every := opts.PollInterval
+	if every <= 0 {
+		every = pollInterval
+	}
+
 	current := r
+	// Named, so a caller can branch on it: a deadline is the run still going,
+	// and waiting again is a fair answer — hence retryable.
+	cutShort := func() error {
+		body := map[string]any{"code": "wait_timeout", "retryable": true}
+		if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			body = refusal("wait_cancelled")
+		}
+		return &Error{
+			Message: fmt.Sprintf("run %s was still %s when the wait was cut short", r.ID, current.Status),
+			Body:    body,
+			Wrapped: ctx.Err(),
+		}
+	}
 	for {
 		refreshed, err := current.Refresh(ctx)
 		if err != nil {
+			// A deadline that lands mid-poll surfaces as the request's
+			// failure; it is the same cut-short wait as one between polls.
+			if ctx.Err() != nil {
+				return current, cutShort()
+			}
 			return current, err
 		}
 		current = refreshed
@@ -184,20 +257,40 @@ func (r JobRun) Wait(ctx context.Context, pollInterval time.Duration) (JobRun, e
 		}
 		select {
 		case <-ctx.Done():
-			// Named, so a caller can branch on it: a deadline is the run still
-			// going, and waiting again is a fair answer — hence retryable.
-			body := map[string]any{"code": "wait_timeout", "retryable": true}
-			if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				body = refusal("wait_cancelled")
-			}
-			return current, &Error{
-				Message: fmt.Sprintf("run %s was still %s when the wait was cut short", r.ID, current.Status),
-				Body:    body,
-				Wrapped: ctx.Err(),
-			}
-		case <-time.After(pollInterval):
+			return current, cutShort()
+		case <-time.After(every):
 		}
 	}
+}
+
+// wouldOutliveRequest is the refusal for a wait the gateway would cut short.
+func wouldOutliveRequest(r JobRun, timeout, left time.Duration) error {
+	asked := "no timeout"
+	if timeout > 0 {
+		asked = "a timeout of " + timeout.String()
+	}
+	return &Error{
+		Message: fmt.Sprintf("waiting on run %s with %s would outlive the request this code is "+
+			"serving, which the gateway cuts off in %s — the caller would get a bare 504. "+
+			"Respond with the run and let the browser follow it.", r.ID, asked, left.Round(time.Second)),
+		Body: map[string]any{"code": "would_outlive_request", "retryable": false,
+			"hint": "return toft.Jobs.Respond(w, r, run)"},
+	}
+}
+
+// requestDeadline reads the gateway's deadline off a request's headers, or the
+// zero time when there is none — outside a request, or reached around the
+// gateway, where nothing will cut the connection.
+func requestDeadline(headers http.Header) time.Time {
+	raw := strings.TrimSpace(findHeader(headers, RequestDeadlineHeader))
+	if raw == "" {
+		return time.Time{}
+	}
+	at, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}
+	}
+	return at
 }
 
 // Output fetches this run's output object, or nil if it produced none.
@@ -237,13 +330,14 @@ type LogLine struct {
 	At     string `json:"at"`
 }
 
-// Logs reads this run's captured output from afterSeq onwards.
-func (r JobRun) Logs(ctx context.Context, afterSeq int) ([]LogLine, error) {
+// Logs reads this run's captured output after the line numbered after; 0 is
+// from the start.
+func (r JobRun) Logs(ctx context.Context, after int) ([]LogLine, error) {
 	t, err := client()
 	if err != nil {
 		return nil, err
 	}
-	raw, err := t.get(ctx, fmt.Sprintf("%s/%s/logs?after=%d", jobRunsPath, r.ID, afterSeq), r.headers)
+	raw, err := t.get(ctx, fmt.Sprintf("%s/%s/logs?after=%d", jobRunsPath, r.ID, after), r.headers)
 	if err != nil {
 		return nil, err
 	}
@@ -256,15 +350,12 @@ func (r JobRun) Logs(ctx context.Context, afterSeq int) ([]LogLine, error) {
 	return body.Lines, nil
 }
 
-// Tail hands each new log line to visit until the run reaches a terminal status,
-// or until visit returns false.
+// Tail hands each new log line to visit until the run ends, or until visit
+// returns false.
 //
 // A callback rather than a channel: a channel would need its own goroutine and a
 // second way to stop it, and the caller already has a context.
-func (r JobRun) Tail(ctx context.Context, pollInterval time.Duration, visit func(LogLine) bool) error {
-	if pollInterval <= 0 {
-		pollInterval = 2 * time.Second
-	}
+func (r JobRun) Tail(ctx context.Context, visit func(LogLine) bool) error {
 	seq := 0
 	drain := func() (bool, error) {
 		lines, err := r.Logs(ctx, seq)
@@ -306,9 +397,10 @@ func (r JobRun) Tail(ctx context.Context, pollInterval time.Duration, visit func
 
 // Cancel stops this run.
 //
-// A viewer may cancel a run they started and not somebody else's; the app acting
-// as itself may cancel a run with no person behind it. Cancelling through the
-// wrong one of those fails rather than quietly doing nothing.
+// A run a viewer started needs that viewer to cancel it — the handle from
+// their [Viewer] carries them; the app acting as itself may cancel a run with
+// no person behind it. Cancelling through the wrong one of those fails rather
+// than quietly doing nothing.
 func (r JobRun) Cancel(ctx context.Context) error {
 	t, err := client()
 	if err != nil {
@@ -319,11 +411,14 @@ func (r JobRun) Cancel(ctx context.Context) error {
 }
 
 func readRun(ctx context.Context, id string, headers map[string]string) (JobRun, error) {
+	if strings.TrimSpace(id) == "" {
+		return JobRun{}, badRequest("a run id is needed to read a run")
+	}
 	t, err := client()
 	if err != nil {
 		return JobRun{}, err
 	}
-	raw, err := t.get(ctx, jobRunsPath+"/"+id, headers)
+	raw, err := t.get(ctx, jobRunsPath+"/"+url.PathEscape(id), headers)
 	if err != nil {
 		return JobRun{}, err
 	}
@@ -335,31 +430,39 @@ func runFrom(raw []byte, headers map[string]string) (JobRun, error) {
 	if err := decode(raw, &run); err != nil {
 		return JobRun{}, err
 	}
-	if run.Status == "" {
-		run.Status = "pending"
-	}
-	if run.Attempt == 0 {
-		run.Attempt = 1
-	}
 	run.headers = headers
 	return run, nil
 }
 
+// badRequest is a call the SDK refuses before it reaches the platform, coded
+// as the platform codes the same mistake.
+func badRequest(message string) error {
+	return &Error{Body: refusal("bad_request"), Message: message}
+}
+
 // StartOptions carries what a run is started with.
 type StartOptions struct {
-	// Params are recorded against the run for reproducibility and audit, so they
-	// must not carry secrets — those belong in the app's managed environment,
-	// which a run references rather than copies.
+	// Params are the run's only input, checked against the types, choices and
+	// required flags toft.toml declares. They are recorded against the run, so
+	// they must not carry secrets — those belong in the app's managed
+	// environment. Large input goes into the app's storage first, and its name
+	// is passed here.
 	Params map[string]any
 
-	// Payload is bulk input, stored in the object store and handed to the run as
-	// a presigned URL; the job reads it with [Run.ReadInput].
-	Payload any
-
-	// IdempotencyKey overrides the derived one. The derivation is already
-	// correct for the case that actually bites, so pass one only when the app has
-	// a better notion of "the same request" than the parameters give.
+	// IdempotencyKey makes a repeated start return the first run for 24 hours.
+	// Without one the platform derives a key from the viewer and the params,
+	// good for a minute — right for a double click, and the case that bites.
 	IdempotencyKey string
+}
+
+// ListOptions narrows [JobsClient.List] and [JobsClient.Mine].
+type ListOptions struct {
+	// Job is one job's runs; "" is every job's.
+	Job string
+	// Status is runs in one status; "" is every status.
+	Status string
+	// Limit is how many, newest first; zero is 50 for List and 20 for Mine.
+	Limit int
 }
 
 // JobsClient is the job surface, either as the app or on a person's behalf.
@@ -369,16 +472,19 @@ type StartOptions struct {
 // cannot mint, alter, or read.
 type JobsClient struct {
 	headers map[string]string
+	// deadline is the request deadline of the viewer this client came from,
+	// handed on to every run it returns.
+	deadline time.Time
 }
 
 // Start queues a run and returns its handle immediately.
 func (j *JobsClient) Start(ctx context.Context, job string, opts StartOptions) (JobRun, error) {
-	body := map[string]any{}
-	if len(opts.Params) > 0 {
-		body["params"] = opts.Params
+	if strings.TrimSpace(job) == "" {
+		return JobRun{}, badRequest("Start needs the name of a job declared in toft.toml")
 	}
-	if opts.Payload != nil {
-		body["payload"] = opts.Payload
+	var body any
+	if len(opts.Params) > 0 {
+		body = map[string]any{"params": opts.Params}
 	}
 	t, err := client()
 	if err != nil {
@@ -389,17 +495,49 @@ func (j *JobsClient) Start(ctx context.Context, job string, opts StartOptions) (
 	if err != nil {
 		return JobRun{}, typedQueueFull(err)
 	}
-	return runFrom(raw, j.headers)
+	run, err := runFrom(raw, j.headers)
+	run.requestDeadline = j.deadline
+	return run, err
+}
+
+// Respond answers the request that started run, and is what a handler returns
+// instead of waiting.
+//
+// A browser — a request whose Accept names text/html — is sent 303 See Other to
+// the run's live status page, which the gateway serves on the app's own origin:
+// the job's name, its progress and message, the outcome and its reason, styled
+// with no app code. Anything else gets 202 Accepted, Location: the status page,
+// and the run as JSON, which is how a script or the app's own frontend learns
+// where to poll.
+//
+// The error is only ever the body's encoding; the status line has already been
+// written by then.
+func (j *JobsClient) Respond(w http.ResponseWriter, r *http.Request, run JobRun) error {
+	if run.StatusURL != "" {
+		w.Header().Set("Location", run.StatusURL)
+	}
+	if r != nil && run.StatusURL != "" && strings.Contains(strings.ToLower(r.Header.Get("Accept")), "text/html") {
+		w.WriteHeader(http.StatusSeeOther)
+		return nil
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	return json.NewEncoder(w).Encode(run)
 }
 
 // Get reads one run by id.
 func (j *JobsClient) Get(ctx context.Context, runID string) (JobRun, error) {
-	return readRun(ctx, runID, j.headers)
+	run, err := readRun(ctx, runID, j.headers)
+	run.requestDeadline = j.deadline
+	return run, err
 }
 
-// List is every run of this app, newest first. A jobName of "" is all of them.
-func (j *JobsClient) List(ctx context.Context, jobName string, limit int) ([]JobRun, error) {
-	return j.list(ctx, "app", jobName, limit)
+// List is this app's runs, newest first, narrowed by opts.
+func (j *JobsClient) List(ctx context.Context, opts ListOptions) ([]JobRun, error) {
+	if opts.Limit <= 0 {
+		opts.Limit = 50
+	}
+	return j.list(ctx, "", opts)
 }
 
 // Mine is this viewer's runs of this app, newest first.
@@ -412,23 +550,30 @@ func (j *JobsClient) List(ctx context.Context, jobName string, limit int) ([]Job
 // *person*, so she can start it on a laptop and check it from a phone.
 // Authorization stays live too: if she lost read on the app overnight the list is
 // empty, because the filter runs against a principal the platform resolved itself.
-func (j *JobsClient) Mine(ctx context.Context, jobName string, limit int) ([]JobRun, error) {
+func (j *JobsClient) Mine(ctx context.Context, opts ListOptions) ([]JobRun, error) {
 	if len(j.headers) == 0 {
 		return nil, &Error{Message: "Mine needs a viewer — call it on toft.ViewerFor(r.Header).Jobs. " +
 			"The app acting as itself has no viewer to scope to, and answering with every run " +
 			"would be a silent widening rather than an answer.",
-			Body: map[string]any{"code": "viewer_required", "retryable": false}}
+			Body: map[string]any{"code": "no_viewer", "retryable": false,
+				"hint": "use toft.Jobs.List(...) for every run of this app"}}
 	}
-	return j.list(ctx, "viewer", jobName, limit)
+	if opts.Limit <= 0 {
+		opts.Limit = 20
+	}
+	return j.list(ctx, "viewer", opts)
 }
 
-func (j *JobsClient) list(ctx context.Context, scope, jobName string, limit int) ([]JobRun, error) {
-	if limit <= 0 {
-		limit = 50
+func (j *JobsClient) list(ctx context.Context, scope string, opts ListOptions) ([]JobRun, error) {
+	query := url.Values{"limit": {strconv.Itoa(opts.Limit)}}
+	if scope != "" {
+		query.Set("scope", scope)
 	}
-	query := url.Values{"scope": {scope}, "limit": {strconv.Itoa(limit)}}
-	if jobName != "" {
-		query.Set("job", jobName)
+	if opts.Job != "" {
+		query.Set("job", opts.Job)
+	}
+	if opts.Status != "" {
+		query.Set("status", opts.Status)
 	}
 	t, err := client()
 	if err != nil {
@@ -446,9 +591,7 @@ func (j *JobsClient) list(ctx context.Context, scope, jobName string, limit int)
 	}
 	for i := range body.Runs {
 		body.Runs[i].headers = j.headers
-		if body.Runs[i].Attempt == 0 {
-			body.Runs[i].Attempt = 1
-		}
+		body.Runs[i].requestDeadline = j.deadline
 	}
 	return body.Runs, nil
 }

@@ -12,7 +12,7 @@ to protect an expensive endpoint no longer has to choose between exposing it to
 everyone who can open the page and asking the platform who the viewer is. The
 three person-words are the ones the Sharing tab granted from — ``owner``,
 ``editor``, ``viewer`` — plus ``anonymous`` for a visitor who is not signed in,
-``system`` for Toft firing a scheduled task, and ``app`` for the app's own
+``system`` for Toft firing a scheduled job, and ``app`` for the app's own
 credential.
 
 **A role is not an identity and it is not domain authority.** It says what this
@@ -22,7 +22,7 @@ belongs on a group: see ``toft.who``. Nothing here names a person.
 
 **This is the app's decision, not the platform's.** Toft enforces nothing
 new: it tells you, you refuse. Where the *platform* decides — starting a job,
-running a scheduled task — it re-resolves live and never reads this header.
+running a scheduled job — it re-resolves live and never reads this header.
 
 **A missing or unverifiable header is ``unknown``, and ``at_least`` is False for
 it.** Absent key, absent header, bad signature and expired all give one answer,
@@ -71,7 +71,7 @@ ROLE_ANONYMOUS = "anonymous"
 ROLE_VIEWER = "viewer"
 ROLE_EDITOR = "editor"
 ROLE_OWNER = "owner"
-#: Toft acting on its own: today, a scheduled task firing on its schedule.
+#: Toft acting on its own: today, a scheduled job firing on its schedule.
 #: A *manual* firing of the same schedule carries the role of whoever pressed the
 #: button.
 ROLE_SYSTEM = "system"
@@ -145,7 +145,7 @@ class Caller:
 
     @property
     def is_system(self) -> bool:
-        """Toft firing a scheduled task on its schedule.
+        """Toft firing a scheduled job on its schedule.
 
         A *manual* firing of the same schedule is the person who pressed the
         button, not this.

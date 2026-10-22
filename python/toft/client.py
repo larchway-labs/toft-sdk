@@ -5,31 +5,19 @@ over ``/api/v1/runner/*`` with the run-scoped token the runner exported. It is
 the other side of :mod:`toft.jobs`, which is how an app *starts* one::
 
     r = toft.run                              # None outside a job
-    params = r.params
-    rows = reconcile(**params)
-    r.progress(80)
-    r.write_output(csv_bytes)               # presigned PUT, both modes
-    r.set_result({"rows": len(rows), "output": "reconcile/2026-03.csv"})
+    region = r.params["region"]               # typed by toml: ints are ints
+    r.progress(40, "reading ledgers")         # the status page shows both
+    r.log("12,044 rows")                      # stdout; the runner ships it
+    r.write_output_json({"rows": 12044})      # presigned PUT, both modes
 
-``set_result`` and ``write_output`` are the two durable channels, in the order
-to reach for them. The structured result is right for what most internal tools
-produce — counts, a summary, a few hundred rows — costs no configuration, and
-comes back on every read of the run. The output object is for the artifact
-itself.
+**Params are the only input.** There is no payload: anything bigger than a
+param belongs in the app's own storage, and the param names where.
+``write_output`` is the one durable result channel, and it outlives scratch —
+``TOFT_SCRATCH_DIR`` is wiped on every start, so a report written there is a
+dead path tomorrow while the run row cheerfully still says ``succeeded``.
 
-**Never write a durable result into scratch.** ``TOFT_SCRATCH_DIR`` is
-wiped on every start and ``session_scratch_dir`` is per-login, so a report
-written there is a dead path tomorrow while the run row cheerfully still says
-``succeeded``. Status outliving its payload is the worst failure shape available
-here, which is why ``result`` should carry a storage-relative reference rather
-than a raw path.
-
-``Launcher`` used to live here and is gone. It could never work: it read
-``TOFT_APP_ID``, which nothing set, and presented ``TOFT_JOB_TOKEN`` —
-minted with the *run* audience — to a route that wanted a session or a personal
-key, so the call authenticated as nobody and 404d. Enqueueing arrives as
-``toft.jobs`` rather than as a repair to that, because there was nothing in it
-worth carrying forward under a deprecation.
+:attr:`Run.deadline` is when the platform stops this run. A job with a long
+loop checks it and stops cleanly, rather than being stopped mid-write.
 
 Standard library only, on purpose. This runs inside a customer's app image
 beside their own dependency tree, and a version conflict between the SDK's
@@ -41,6 +29,7 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import sys
 import urllib.error
 import urllib.request
 from typing import Any, Optional
@@ -51,6 +40,7 @@ from typing import Any, Optional
 # jobs client to get it.
 from .caller import ROLE_UNKNOWN
 from .errors import ToftError
+from .jobs import _parse_time
 from .transport import _from_http_error
 
 DEFAULT_TIMEOUT = 30.0
@@ -58,7 +48,7 @@ DEFAULT_TIMEOUT = 30.0
 #: The runner callback contract this SDK speaks, and it must equal the platform's
 #: ``runner.ContractVersion``. A partial upgrade is reported rather than
 #: tolerated, so a stale number here is not a warning — it is a 409 on every
-#: ``progress`` and ``set_result`` call a job makes. ``sdk/contract_test.go``
+#: ``progress`` call a job makes. ``sdk/contract_test.go``
 #: is what keeps the four copies of it in step.
 RUNNER_CONTRACT_VERSION = "2"
 
@@ -98,42 +88,9 @@ class _RunnerTransport:
             raise ToftError(f"cannot reach Toft at {self._base}: {exc.reason}") from None
 
 
-def _input_refusal_body(status: int) -> dict | None:
-    """The code for the two refusals :func:`_input_refusal` explains. Any other
-    status is left to the status rule: a 503 is worth another try."""
-    if status == 404:
-        return {"code": "input_not_given", "retryable": False}
-    if status in (403, 410):
-        return {"code": "input_expired", "retryable": False}
-    return None
-
-
-def _input_refusal(status: int) -> str:
-    """What a failed input read means, in the two cases that are not "it broke".
-
-    Written out because the failures are indistinguishable at the HTTP layer and
-    the fixes are opposite: one is a job asking for something it was never
-    given, the other is a job that took too long.
-    """
-    if status == 404:
-        return (
-            "this run was given no payload — TOFT_INPUT_URI points at an "
-            "object that was never written. A run started with parameters alone "
-            "has no input; read run.params for those. (A current platform leaves "
-            "run.input_uri empty in that case, so an install still exporting it "
-            "is older than this SDK.)"
-        )
-    if status in (403, 410):
-        return (
-            "this run's payload is no longer readable: the presigned link the "
-            "platform minted for it has expired. Read the input at the start of "
-            "a run rather than hours into one."
-        )
-    return f"reading this run's input failed: HTTP {status}"
-
-
 class Run:
-    """The job's own view of itself: report progress, read input, write output.
+    """The job's own view of itself: who started it, its params, its deadline;
+    report progress, log, write output.
 
     ``Run.from_env()`` inside a job configures itself from what the runner
     already exported, so a job never handles a credential explicitly.
@@ -142,18 +99,21 @@ class Run:
     def __init__(self, base_url: str, token: str, run_id: str) -> None:
         self._t = _RunnerTransport(base_url, token)
         self.id = run_id
-        self.input_uri = os.environ.get("TOFT_INPUT_URI", "")
+        #: The job this run is of — its ``[jobs.<name>]`` in ``toft.toml``.
+        self.job = os.environ.get("TOFT_JOB_NAME", "")
+        #: The run this one re-ran, or ``None``. A rerun carries the same
+        #: params; a job that must not repeat a side effect checks this.
+        self.rerun_of = os.environ.get("TOFT_RERUN_OF") or None
         self.output_uri = os.environ.get("TOFT_OUTPUT_URI", "")
-        #: *How* this run started: "cron", "manual", "api" or "app".
+        #: *How* this run started: ``app``, ``viewer``, ``cli``, ``schedule`` or
+        #: ``ui`` — the run's ``started_by``.
         self.trigger = os.environ.get("TOFT_TRIGGER", "")
         #: *Who* started it: one of the ROLE_* words, ``"system"`` for a
         #: schedule firing on its schedule, ``"app"`` for the app starting work
         #: for itself, and ``"unknown"`` where the platform did not say.
         #:
-        #: The pair is the point. "manual" tells a report job nothing about
-        #: whether to include the private columns; "manual" plus "viewer" does.
-        #: Both have been recorded on every run since jobs existed and neither
-        #: had a name in this SDK until now.
+        #: The pair is the point. "ui" tells a report job nothing about
+        #: whether to include the private columns; "ui" plus "viewer" does.
         #:
         #: **The role is today's, not the day the run was queued.** It is
         #: derived from the run's actor when the workload starts, so somebody
@@ -176,7 +136,13 @@ class Run:
         return cls(base_url, token, run_id)
 
     @property
+    def started_by(self) -> str:
+        """The contract's name for :attr:`trigger`."""
+        return self.trigger
+
+    @property
     def params(self) -> dict:
+        """The run's params, typed as ``toft.toml`` declares them."""
         raw = os.environ.get("TOFT_PARAMS")
         return json.loads(raw) if raw else {}
 
@@ -190,49 +156,29 @@ class Run:
         **never defaulted to now**: a re-run of Tuesday's work on Thursday must
         not quietly process Thursday.
         """
-        raw = os.environ.get("TOFT_SCHEDULED_FOR")
-        if not raw:
-            return None
-        return datetime.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        return _parse_time(os.environ.get("TOFT_SCHEDULED_FOR"))
 
-    def progress(self, percent: int) -> None:
-        """Report how far along this run is, 0–100."""
-        self._t.request("POST", "/api/v1/runner/progress", {"version": RUNNER_CONTRACT_VERSION, "percent": int(percent)})
+    @property
+    def deadline(self) -> Optional[datetime.datetime]:
+        """When the platform stops this run, or ``None`` where it did not say."""
+        return _parse_time(os.environ.get("TOFT_DEADLINE"))
 
-    def set_result(self, result: Any) -> None:
-        """Record the run's structured result."""
-        # record_only: the run is still going, and only the runner's own report
-        # at exit ends it — without the flag this call finished the run as
-        # succeeded, and everything the job did afterwards was lost.
-        self._t.request("POST", "/api/v1/runner/result", {
-            "version": RUNNER_CONTRACT_VERSION, "result": result, "exit_code": 0, "record_only": True,
-        })
+    def progress(self, percent: int, message: Optional[str] = None) -> None:
+        """Report how far along this run is, 0–100, and optionally what it is
+        doing — a few words the status page shows under the bar."""
+        body: dict[str, Any] = {"version": RUNNER_CONTRACT_VERSION, "percent": int(percent)}
+        if message:
+            body["message"] = str(message)
+        self._t.request("POST", "/api/v1/runner/progress", body)
 
-    def read_input(self) -> bytes:
-        """Fetch the payload this run was given, or ``b""`` when it was given none.
+    def log(self, message: str, error: bool = False) -> None:
+        """Write one line to this run's log.
 
-        Over a presigned URL: a job holds no object-store credential, because
-        one that could read this run's input could read every other app's.
-
-        **A refusal here is named rather than relayed.** The platform mints this
-        URL only for a run that was actually given a payload, so a 404 means an
-        install that predates that rule; a 403 or 410 is the link's six-hour
-        window having closed under a very long run. Both used to surface as
-        urllib's bare ``HTTPError: 404`` — a failure an author could not tell
-        from a store that was down.
+        Nothing but a print — the runner ships stdout and stderr — and here so a
+        job does not have to know that, or that a buffered stdout loses the last
+        lines of a run that is then killed.
         """
-        if not self.input_uri:
-            return b""
-        try:
-            with urllib.request.urlopen(self.input_uri, timeout=DEFAULT_TIMEOUT) as resp:
-                return resp.read()
-        except urllib.error.HTTPError as exc:
-            raise ToftError(_input_refusal(exc.code), status=exc.code,
-                            body=_input_refusal_body(exc.code)) from None
-
-    def read_input_json(self) -> Any:
-        raw = self.read_input()
-        return json.loads(raw) if raw else None
+        print(message, file=sys.stderr if error else sys.stdout, flush=True)
 
     def write_output(self, data: bytes | str) -> None:
         """Upload this run's output.

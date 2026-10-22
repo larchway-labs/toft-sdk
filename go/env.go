@@ -31,6 +31,10 @@ const (
 	EnvJobName = "TOFT_JOB_NAME"
 	// EnvScheduledFor is the instant a run is for; see [Run.ScheduledFor].
 	EnvScheduledFor = "TOFT_SCHEDULED_FOR"
+	// EnvDeadline is when the run will be stopped; see [Run.Deadline].
+	EnvDeadline = "TOFT_DEADLINE"
+	// EnvRerunOf is the run this one repeats; see [Run.RerunOf].
+	EnvRerunOf = "TOFT_RERUN_OF"
 )
 
 // AppContractVersion is the app contract this SDK speaks, sent on every
@@ -89,11 +93,10 @@ func missing(name string) string {
 		}
 		return fmt.Sprintf(
 			"%s is not set because this is a job (%s), and a job is deliberately given "+
-				"no app token — this is not a broken deploy. toft.Data, toft.App and toft.Notify "+
+				"no app token — this is not a broken deploy. toft.Data and toft.App "+
 				"belong to the process serving this app's requests, and a job serves none. "+
 				"Two ways round it: do this from the service process, or carry the result "+
-				"out of the run with Run.SetResult or Run.WriteOutputJSON and let an "+
-				"endpoint fold it in.", name, where)
+				"out of the run with Run.WriteOutputJSON and let an endpoint fold it in.", name, where)
 	}
 	return fmt.Sprintf(
 		"%s is not set. This call needs the environment Toft injects into a "+

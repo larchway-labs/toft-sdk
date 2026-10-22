@@ -23,9 +23,10 @@ One import, one entry point::
     toft.notify.slack_file("/tmp/recon.xlsx", title="Weekly reconciliation")
     toft.notify.email(to=["finance@example.com"], subject="Weekly report", text=...)
 
-    toft.jobs.start("reconcile", params={"month": "2026-03"})   # as the app
-    me = toft.viewer(request.headers)                           # as a person
-    me.jobs.start("reconcile", params={"month": month})
+    run = toft.jobs.start("reconcile", params={"month": "2026-03"})  # as the app
+    me = toft.viewer(request.headers)                                # as a person
+    run = me.jobs.start("reconcile", params={"month": month})
+    return toft.jobs.respond(run)              # 202, or 303 to its status page
     me.jobs.mine("reconcile", limit=20)
 
     me = toft.who(request.headers)             # who is looking: Identity or None
@@ -33,8 +34,6 @@ One import, one entry point::
         render_admin_tab()
 
     toft.run                                   # inside a job: None everywhere else
-    task = toft.task(request.headers)          # a scheduled firing, else None
-    if task: task.log("read 1,204 rows")     # a log the platform cannot capture
 
 **The credential stays with the platform.** An app never holds the Slack bot
 token or the relay password, never names the channel it posts to, and never
@@ -62,7 +61,10 @@ runs a command ``toft.toml`` declares, from the same release, as an isolated
 workload with a memory limit, a deadline and a durable record — in *both*
 execution modes, because moving twelve minutes and six gigabytes out of the
 app's own process is the point rather than a side effect. It never blocks on the
-work. See :mod:`toft.jobs`.
+work, and a request handler answers with ``toft.jobs.respond(run)`` rather than
+waiting: ``wait()`` is for scripts and jobs, and refuses inside a request it
+would outlive. Params are the only input, and a run is never retried behind
+anyone's back. See :mod:`toft.jobs`.
 
 **Two objects, and which one you call is the decision.** ``toft.jobs`` is the app
 acting as itself; ``toft.viewer(headers).jobs`` is the app acting for the person
@@ -81,30 +83,12 @@ a runtime state to branch on. A request with nobody on it (anonymous, or an API
 key) is ``None`` whatever the setting; ``toft.app.can("viewer.identity")`` reads
 the setting itself.
 
-**A scheduled task's log is the one thing the platform cannot capture for you.**
-Toft triggers a task by making an HTTP request to a path you published; it
-owns no process, so your prints land in the app's own stream interleaved with
-every other request. ``toft.task(request.headers)`` is that firing — ``None`` on an
-ordinary visit, so one endpoint can serve both a schedule and a person — and
-``task.log(...)`` is what makes a run's log exist. Worth adding to anything that
-might outlive the timeout: a run that never answers is recorded as a failure
-with nothing else in it. See :mod:`toft.task`.
-
-**A failed run may be retried, and you configure that in Toft, not here.**
-Retries are off by default and switched on per task or job — on the app's
-Automation tab, or as ``retries = N`` in ``toft.toml``. What the SDK does is
-keep the chain from being your problem: a run the platform has queued another
-attempt at is not :attr:`~toft.jobs.JobRun.done`, and ``refresh()`` follows
-it, so ``wait()`` gives you the outcome of the work rather than of the first try
-at it. Only runs nobody is waiting on are eligible — a schedule, and what the app
-started — never one somebody kicked off from the Toft panel.
-
 The library is deliberately thin. It owns no delivery semantics — no client-side
 scheduling, no size limits duplicated from the platform, and **no retry policy
 of its own**: the one repeat it makes is of a request that never reached a
-handler, which is a transport detail and not the platform's retry of a *run*
-described above. The stable surface is the HTTP API; anything clever added here
-becomes a second source of truth about how a send behaves.
+handler, which is a transport detail — a *run* is never retried. The stable
+surface is the HTTP API; anything clever added here becomes a second source of
+truth about how a send behaves.
 """
 
 from __future__ import annotations
@@ -128,11 +112,10 @@ from .caller import (
 from .client import Run
 from .data import Data, Document, VersionConflict
 from .errors import ToftError
-from .jobs import JobRun, Jobs, QueueFull
+from .jobs import JobRun, Jobs, QueueFull, WaitTimeout
 from .notifier import Notify, Send
 from .resources import Mount, mounts, storage, store
 from .scratch import SESSION_HEADER, new_session_id, scratch_dir, session_scratch_dir
-from .task import CRON_HEADER, RUN_HEADER, SCHEDULE_HEADER, Task, task
 from .viewer import ACT_FOR_HEADER, Identity, Viewer, viewer, who
 
 # The singletons app code reaches for. All lazy: constructing them touches
@@ -173,8 +156,6 @@ __all__ = [
     # What the caller in front of this request may do, verified locally with no
     # round trip. `who` is who; this is what they may do.
     "caller",
-    # Inside a scheduled task: the run's own log. None on an ordinary visit.
-    "task",
     "storage",
     "store",
     "mounts",
@@ -190,10 +171,10 @@ __all__ = [
     "Jobs",
     "JobRun",
     "QueueFull",
+    "WaitTimeout",
     "Identity",
     "Viewer",
     "Caller",
-    "Task",
     "Mount",
     "Run",
     "Data",
@@ -211,9 +192,6 @@ __all__ = [
     "ROLE_OWNER",
     "ROLE_SYSTEM",
     "ROLE_APP",
-    "CRON_HEADER",
-    "RUN_HEADER",
-    "SCHEDULE_HEADER",
 ]
 
 __version__ = "0.3.0"

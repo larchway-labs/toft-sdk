@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -22,20 +21,20 @@ import (
 //	var params struct{ Month string }
 //	run.Params(&params)
 //	rows := reconcile(params.Month)
-//	run.Progress(ctx, 80)
-//	run.WriteOutput(ctx, csvBytes)   // presigned PUT, both modes
-//	run.SetResult(ctx, map[string]any{"rows": len(rows), "output": "reconcile/2026-03.csv"})
+//	run.Progress(ctx, 80, "writing the CSV")
+//	run.WriteOutputJSON(ctx, map[string]any{"rows": len(rows), "file": "reconcile/2026-03.csv"})
 //
-// SetResult and WriteOutput are the two durable channels, in the order to reach
-// for them. The structured result is right for what most internal tools produce —
-// counts, a summary, a few hundred rows — costs no configuration, and comes back
-// on every read of the run. The output object is for the artifact itself.
+// **Params are the only input, and the output is the one way back.** Large
+// input goes into the app's storage before the start and its name travels as a
+// param; a large result goes into storage too, and the output names it. A job
+// does not reach toft.Data — its result comes back through its output, the
+// app's storage or the app's own database.
 //
 // **Never write a durable result into scratch.** TOFT_SCRATCH_DIR is wiped
 // on every start and [SessionScratchDir] is per-login, so a report written there
 // is a dead path tomorrow while the run row cheerfully still says succeeded.
 // Status outliving its payload is the worst failure shape available here, which
-// is why a result should carry a storage-relative reference rather than a raw
+// is why an output should carry a storage-relative reference rather than a raw
 // path.
 
 // runnerContractVersion is the callback contract this SDK speaks, and it must
@@ -44,24 +43,28 @@ import (
 // makes. sdk/contract_test.go keeps the four copies of it in step.
 const runnerContractVersion = "2"
 
-// Run is the job's own view of itself: report progress, read input, write output.
+// Run is the job's own view of itself: who it is, what it was given, and how it
+// reports back.
 //
 // [CurrentRun] configures it from what the runner already exported, so a job
 // never handles a credential explicitly.
 type Run struct {
-	// ID is the run this process is executing.
-	ID string
+	// ID is the run this process is executing; Job is the job's name.
+	ID  string
+	Job string
 
-	// Trigger is *how* this run started: "cron", "manual", "api" or "app".
-	// TriggerRole is *who* — one of [RoleOwner], [RoleEditor], [RoleViewer],
-	// [RoleAnonymous], [RoleSystem] (a schedule firing on its schedule) or
-	// [RoleApp] (the app starting work for itself), and [RoleUnknown] where the
-	// platform did not say.
+	// RerunOf is the run this one repeats, when a person pressed Run again —
+	// "" for a first run. A job that must not double-apply its work reads it.
+	RerunOf string
+
+	// Trigger is *how* this run started: "app", "viewer", "cli", "schedule" or
+	// "ui". TriggerRole is *who* — one of [RoleOwner], [RoleEditor],
+	// [RoleViewer], [RoleAnonymous], [RoleSystem] (a schedule firing on its
+	// schedule) or [RoleApp] (the app starting work for itself), and
+	// [RoleUnknown] where the platform did not say.
 	//
-	// The pair is the point. "manual" tells a report job nothing about whether
-	// to include the private columns; "manual" plus "viewer" does. Both have
-	// been recorded on every run since jobs existed and neither had a name in
-	// this SDK until now.
+	// The pair is the point. "ui" tells a report job nothing about whether to
+	// include the private columns; "ui" plus "viewer" does.
 	//
 	// **The role is today's, not the day the run was queued.** It is derived
 	// from the run's actor when the workload starts, so somebody demoted in
@@ -72,10 +75,9 @@ type Run struct {
 	Trigger     string
 	TriggerRole string
 
-	// InputURI and OutputURI are presigned locations the platform minted. A job
-	// holds no object-store credential, because one that could read this run's
-	// input could read every other app's.
-	InputURI  string
+	// OutputURI is the presigned location the platform minted for this run's
+	// output. A job holds no object-store credential, because one that could
+	// write this run's output could reach every other app's.
 	OutputURI string
 
 	base   string
@@ -92,7 +94,7 @@ type Run struct {
 func CurrentRun() *Run {
 	base := os.Getenv(EnvAPIURL)
 	token := os.Getenv("TOFT_JOB_TOKEN")
-	id := os.Getenv("TOFT_RUN_ID")
+	id := os.Getenv(EnvRunID)
 	if base == "" || token == "" || id == "" {
 		return nil
 	}
@@ -104,9 +106,10 @@ func CurrentRun() *Run {
 	}
 	return &Run{
 		ID:          id,
+		Job:         os.Getenv(EnvJobName),
+		RerunOf:     os.Getenv(EnvRerunOf),
 		Trigger:     os.Getenv("TOFT_TRIGGER"),
 		TriggerRole: triggerRole,
-		InputURI:    os.Getenv("TOFT_INPUT_URI"),
 		OutputURI:   os.Getenv("TOFT_OUTPUT_URI"),
 		base:        trimSlash(base),
 		token:       token,
@@ -122,9 +125,9 @@ func CurrentRun() *Run {
 
 // Params unmarshals the parameters this run was started with into value.
 //
-// A struct of the app's own is the point: the parameters were recorded for audit
-// as JSON, and reading them back through a typed shape is where a job notices
-// that a caller sent a month it cannot parse.
+// They arrive typed — declared defaults applied, an int an int — so a struct of
+// the app's own reads them directly. Reading through a typed shape is also where
+// a job notices a param it does not expect.
 func (r *Run) Params(value any) error {
 	raw := os.Getenv("TOFT_PARAMS")
 	if raw == "" {
@@ -141,10 +144,21 @@ func (r *Run) Params(value any) error {
 // A scheduled run's is the tick it fired for — the 03:00 run is the 03:00 run
 // even if it started at 03:40 — in the schedule's own zone, which the returned
 // time carries as its offset. A run started with `toft job run --for` carries what
-// was named. Never defaulted to now: a re-run of Tuesday's work on Thursday must
-// not quietly process Thursday.
+// was named, and a rerun carries the original's. Never defaulted to now: a re-run
+// of Tuesday's work on Thursday must not quietly process Thursday.
 func (r *Run) ScheduledFor() (time.Time, bool) {
-	raw := os.Getenv(EnvScheduledFor)
+	return envTime(EnvScheduledFor)
+}
+
+// Deadline is when the platform will stop this run, and false when it did not
+// say. A job with a long tail of work checks it before starting a step it
+// cannot finish, and leaves its output in a state the next run can resume from.
+func (r *Run) Deadline() (time.Time, bool) {
+	return envTime(EnvDeadline)
+}
+
+func envTime(name string) (time.Time, bool) {
+	raw := os.Getenv(name)
 	if raw == "" {
 		return time.Time{}, false
 	}
@@ -155,94 +169,26 @@ func (r *Run) ScheduledFor() (time.Time, bool) {
 	return at, true
 }
 
-// Progress reports how far along this run is, 0–100.
-func (r *Run) Progress(ctx context.Context, percent int) error {
-	_, err := r.call(ctx, "/api/v1/runner/progress", map[string]any{
-		"version": runnerContractVersion, "percent": percent,
-	})
+// Progress reports how far along this run is, 0–100, with an optional short
+// message — "loading rows" — shown beside the bar on the run's status page.
+func (r *Run) Progress(ctx context.Context, percent int, message string) error {
+	body := map[string]any{"version": runnerContractVersion, "percent": percent}
+	if message != "" {
+		body["message"] = message
+	}
+	_, err := r.call(ctx, "/api/v1/runner/progress", body)
 	return err
 }
 
-// SetResult records the run's structured result.
-func (r *Run) SetResult(ctx context.Context, result any) error {
-	_, err := r.call(ctx, "/api/v1/runner/result", map[string]any{
-		"version": runnerContractVersion, "result": result, "exit_code": 0,
-		// The run is still going; only the runner's own report at exit ends it.
-		"record_only": true,
-	})
-	return err
-}
-
-// ReadInput fetches the payload this run was given, or nil when it was given
-// none.
-//
-// **A refusal here is named rather than relayed.** The platform mints this URL
-// only for a run that was actually given a payload, so a 404 means an install
-// that predates that rule; a 403 or 410 is the link's six-hour window having
-// closed under a very long run. Both used to surface as "fetching the object:
-// 404 Not Found" — a failure an author could not tell from a store that was
-// down.
-func (r *Run) ReadInput(ctx context.Context) ([]byte, error) {
-	if r.InputURI == "" {
-		return nil, nil
+// Log writes one line to the run's log: stdout, or stderr when isError. The
+// runner captures both, so this is a print with the stream named — and the
+// last line on stderr is what a failed run gives as its reason.
+func (r *Run) Log(message string, isError bool) {
+	out := os.Stdout
+	if isError {
+		out = os.Stderr
 	}
-	raw, err := fetchPresigned(ctx, r.InputURI)
-	if err != nil {
-		var e *Error
-		if errors.As(err, &e) && e.Status != 0 {
-			return nil, &Error{Body: inputRefusalBody(e.Status), Message: inputRefusal(e.Status),
-				Status: e.Status, Wrapped: err}
-		}
-		return nil, err
-	}
-	return raw, nil
-}
-
-// inputRefusal is what a failed input read means, in the two cases that are not
-// "it broke".
-//
-// Written out because the failures are indistinguishable at the HTTP layer and
-// the fixes are opposite: one is a job asking for something it was never given,
-// the other is a job that took too long. The same two sentences the Python and
-// Node SDKs raise.
-// inputRefusalBody names the two refusals [inputRefusal] explains, so an agent
-// branches on input_expired rather than on the sentence. Any other status is
-// left to the status rule: a 503 from the object store is worth another try.
-func inputRefusalBody(status int) map[string]any {
-	switch status {
-	case http.StatusNotFound:
-		return refusal("input_not_given")
-	case http.StatusForbidden, http.StatusGone:
-		return refusal("input_expired")
-	}
-	return nil
-}
-
-func inputRefusal(status int) string {
-	switch status {
-	case http.StatusNotFound:
-		return "this run was given no payload — TOFT_INPUT_URI points at an object " +
-			"that was never written. A run started with parameters alone has no input; " +
-			"read Run.Params for those. (A current platform leaves Run.InputURI empty in " +
-			"that case, so an install still exporting it is older than this SDK.)"
-	case http.StatusForbidden, http.StatusGone:
-		return "this run's payload is no longer readable: the presigned link the platform " +
-			"minted for it has expired. Read the input at the start of a run rather than " +
-			"hours into one."
-	}
-	return fmt.Sprintf("reading this run's input failed: HTTP %d", status)
-}
-
-// ReadInputJSON is [Run.ReadInput] decoded into value.
-func (r *Run) ReadInputJSON(ctx context.Context, value any) error {
-	raw, err := r.ReadInput(ctx)
-	if err != nil || len(raw) == 0 {
-		return err
-	}
-	if err := json.Unmarshal(raw, value); err != nil {
-		return &Error{Message: fmt.Sprintf("this run's input is not the shape this job expects: %v", err), Wrapped: err}
-	}
-	return nil
+	fmt.Fprintln(out, message)
 }
 
 // WriteOutput uploads this run's output.

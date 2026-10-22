@@ -12,7 +12,7 @@ import (
 //
 //	me, err := toft.ViewerFor(r.Header)
 //	run, err := me.Jobs.Start(ctx, "reconcile", toft.StartOptions{Params: params})
-//	recent, err := me.Jobs.Mine(ctx, "reconcile", 20)
+//	recent, err := me.Jobs.Mine(ctx, toft.ListOptions{Job: "reconcile"})
 //
 // **The app never asserts who the viewer is.** What it relays is a blob the
 // platform signed over (user, app, session) on its way through the gateway. The
@@ -21,9 +21,11 @@ import (
 // identity.
 //
 // What falls out is the valuable part: the platform holds the real principal at
-// the moment it decides. Whether this person may start this job is evaluated
-// against *their* permissions, not against the app's claim about them, so an app
-// cannot launder a viewer into authority they do not have. And it works in the
+// the moment it decides. A run is attributed to the person *it* resolved, not to
+// the app's claim about them, so an app cannot put a run in a name that never
+// pressed its button. Whether this person may press it is the app's own rule —
+// [Who] or [CallerFor] — because declaring the job in toft.toml is what authorized
+// the app to start it, and the platform adds no role gate. And it works in the
 // other direction too — [JobsClient.Mine] answers a question *about* the viewer
 // without disclosing the viewer.
 //
@@ -55,8 +57,8 @@ const ActForHeader = "X-Toft-Act-For"
 // A page that re-renders per interaction must not become a request per render,
 // and 60 seconds is the honest trade rather than a tuned number. What it buys and
 // what it costs, plainly: **a role change takes effect in the app within the TTL,
-// not instantly.** Where the *platform* enforces — starting a job, running a
-// scheduled task — it re-resolves live and this cache is irrelevant. Where the
+// not instantly.** Where the *platform* enforces — attributing a run, listing a
+// viewer's runs — it re-resolves live and this cache is irrelevant. Where the
 // *app* enforces, the app is the enforcer and the window is the app's to accept
 // or to shorten. [WhoNow] bypasses it for the one call an app wants to be certain
 // about.
@@ -170,7 +172,8 @@ func (v *Viewer) Identity(ctx context.Context) (*Identity, error) {
 func ViewerFor(headers http.Header) (*Viewer, error) {
 	blob := findHeader(headers, ActForHeader)
 	if blob == "" {
-		return nil, &Error{Body: refusal("no_viewer"), Message: "no " + ActForHeader + " header on this request, so there " +
+		return nil, &Error{Body: map[string]any{"code": "no_viewer", "retryable": false,
+			"hint": "use toft.Jobs.Start(...) to start it as the app"}, Message: "no " + ActForHeader + " header on this request, so there " +
 			"is no viewer to act for. Toft's proxy sets it only for a signed-in browser " +
 			"session, so its absence means the request came with an API key (the gateway " +
 			"authorizes a key but asserts no person to the app — `toft fetch --session` is a " +
@@ -179,7 +182,12 @@ func ViewerFor(headers http.Header) (*Viewer, error) {
 			"toft.Jobs to act as the app itself, deliberately, rather than treating this as " +
 			"the same thing."}
 	}
-	return &Viewer{blob: blob, Jobs: &JobsClient{headers: map[string]string{ActForHeader: blob}}}, nil
+	// The request's deadline rides along, so a run started for this viewer
+	// knows it is inside a request and refuses a wait the gateway would cut.
+	return &Viewer{blob: blob, Jobs: &JobsClient{
+		headers:  map[string]string{ActForHeader: blob},
+		deadline: requestDeadline(headers),
+	}}, nil
 }
 
 // Who is who is looking at this app, or nil if there is nobody to name.

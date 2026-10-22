@@ -22,13 +22,21 @@ api_url <- function() {
 # of from `X-Toft-Act-For`, and the app-data precondition from `If-Match`.
 # With no way to set either, `viewer()` relayed the act-for blob as a query
 # parameter the server never looks at — so every viewer resolved to nobody —
-# `job_start(act_for =)` put it in the body, losing the attribution it was
-# passed to establish, and `app_data_set(if_version =)` sent a precondition that
+# `job_start()` put it in the body, losing the attribution it was passed to
+# establish, and `app_data_set(if_version =)` sent a precondition that
 # was ignored, quietly turning a compare-and-set into last-write-wins. All three
 # failed silently, which is the one thing the note at the top of this file says
 # an SDK must not do.
-toft_request <- function(method, path, body = NULL, query = NULL, extra_headers = NULL) {
-  token <- app_or_job_token()
+#
+# `token` replaces the app's credential for the one caller that has its own: a
+# job's callbacks to /api/v1/runner/*, made with the run token. `parse = FALSE`
+# returns the response itself, redirects unfollowed, for the one route that
+# answers with a presigned URL the app's token must not be sent to.
+toft_request <- function(method, path, body = NULL, query = NULL, extra_headers = NULL,
+                         token = NULL, parse = TRUE) {
+  if (is.null(token)) {
+    token <- app_or_job_token()
+  }
   url <- paste0(api_url(), path)
   if (!is.null(query) && length(query)) {
     parts <- vapply(names(query), function(k) {
@@ -57,6 +65,9 @@ toft_request <- function(method, path, body = NULL, query = NULL, extra_headers 
     curl::handle_setopt(handle, postfields = payload)
   }
   curl::handle_setopt(handle, customrequest = method)
+  if (!parse) {
+    curl::handle_setopt(handle, followlocation = FALSE)
+  }
   curl::handle_setheaders(handle, .list = as.list(headers))
 
   resp <- curl::curl_fetch_memory(url, handle = handle)
@@ -65,6 +76,9 @@ toft_request <- function(method, path, body = NULL, query = NULL, extra_headers 
 
   if (resp$status_code >= 400) {
     stop(toft_error(method, path, resp, text))
+  }
+  if (!parse) {
+    return(resp)
   }
   if (!nzchar(trimws(text))) {
     return(invisible(NULL))
@@ -89,13 +103,18 @@ toft_request <- function(method, path, body = NULL, query = NULL, extra_headers 
 # mounted twice, a level too low — as the same `toft_error` condition the
 # platform's refusals are, so `tryCatch(..., toft_error = )` catches both and
 # `e$code` names it. Never retryable: a mapping or a name is wrong, and trying
-# again changes neither. `status` is NA because no request was made.
-toft_refusal <- function(code, message) {
+# again changes neither — the one exception is a wait that ran out, where the
+# run is still going and waiting again is fair, so `retryable` is an argument.
+# `status` is NA because no request was made. `hint` is the next step, written
+# to be pasted, as the platform's own hints are.
+toft_refusal <- function(code, message, hint = NULL, retryable = FALSE) {
+  body <- list(code = code, retryable = retryable)
+  if (!is.null(hint)) body$hint <- hint
   structure(
     class = c("toft_error", "error", "condition"),
     list(message = message, call = NULL, status = NA_integer_, code = code,
-         retryable = FALSE, hint = NULL, retry_after = NULL,
-         body = list(code = code, retryable = FALSE))
+         retryable = retryable, hint = hint, retry_after = NULL,
+         body = body)
   )
 }
 

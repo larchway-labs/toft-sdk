@@ -193,22 +193,28 @@ func (d DataClient) Update(ctx context.Context, mutate func(map[string]any) (map
 	return d.UpdateN(ctx, mutate, DefaultUpdateAttempts)
 }
 
+// rateLimitWaits is how many rate-limit refusals one update waits out, counted
+// apart from its attempts, which are conflicts.
+const rateLimitWaits = 30
+
 // UpdateN is [DataClient.Update] with the attempt count spelled out.
 func (d DataClient) UpdateN(ctx context.Context, mutate func(map[string]any) (map[string]any, error), attempts int) (Document, error) {
 	if attempts < 1 {
 		attempts = 1
 	}
 	var last error
-	// A rate-limit refusal is waited out and tried again like a conflict:
+	conflicts, waits := 0, 0
+	// A rate-limit refusal is waited out and does not spend an attempt:
 	// several writers at once each read and re-read, and on the app's limiter
 	// (burst 10) the lost write was the update's own — the one thing this
-	// method promises not to lose.
+	// method promises not to lose. The waits have a bound of their own; past
+	// it the refusal itself is returned, naming the limiter.
 	limited := func(err error) bool {
 		e, ok := AsError(err)
-		if !ok || e.Code() != "rate_limited" {
+		if !ok || e.Code() != "rate_limited" || waits >= rateLimitWaits {
 			return false
 		}
-		last = err
+		waits++
 		wait := e.RetryAfter
 		if wait <= 0 && !e.retryGiven {
 			wait = time.Second
@@ -220,7 +226,7 @@ func (d DataClient) UpdateN(ctx context.Context, mutate func(map[string]any) (ma
 			return true
 		}
 	}
-	for i := 0; i < attempts; i++ {
+	for conflicts < attempts {
 		current, err := d.Read(ctx)
 		if err != nil {
 			if limited(err) {
@@ -251,12 +257,19 @@ func (d DataClient) UpdateN(ctx context.Context, mutate func(map[string]any) (ma
 			return Document{}, err
 		}
 		last = err
+		conflicts++
 	}
-	return Document{}, &Error{
+	// The last conflict's body, so the give-up carries its code and
+	// retryable as Node's and Python's do — an SDK refusal is never uncoded.
+	out := &Error{
 		Message: fmt.Sprintf("app data changed under %d attempts to update it — "+
 			"something is writing it continuously", attempts),
 		Wrapped: last,
 	}
+	if e, ok := AsError(last); ok {
+		out.Status, out.Body = e.Status, e.Body
+	}
+	return Document{}, out
 }
 
 // Clear throws the document away, putting the app back to never having one.

@@ -8,71 +8,99 @@
  *
  *   import toft from "@larchway/toft";
  *
- *   // The app acting as itself — no viewer, no actor.
- *   const run = await toft.jobs.start("reconcile", { params: { month } });
+ *   // Hono, Next.js route handlers, anything that returns a Fetch Response:
+ *   app.post("/reports", async (c) => {
+ *     const me = toft.viewer(c.req.raw.headers);           // the person clicking
+ *     const run = await me.jobs.start("nightly-report", { params: { region: "emea" } });
+ *     return toft.jobs.respond(run, c.req.raw);            // 202, or 303 to its status page
+ *   });
  *
- *   // The app acting for whoever is looking at the page.
- *   const me = toft.viewer(req.headers);
- *   const run2 = await me.jobs.start("reconcile", { params: { month } });
- *   const recent = await me.jobs.mine("reconcile", { limit: 20 });
+ *   // Express, which does not send a Fetch Response itself:
+ *   const r = toft.jobs.respond(run, req);
+ *   res.status(r.status).set(Object.fromEntries(r.headers)).send(await r.text());
  *
- * Which object you call is what says whether a run is attributed to a person,
- * and that is deliberate: a flag would make the anonymous case the default
- * spelling of the attributed one, and attribution would then be lost by
- * omission.
+ * **Respond, don't wait.** A web request has a deadline — the gateway, and any
+ * load balancer in front of it, cuts it off — and a job's cold start alone can
+ * be tens of seconds. `respond(run, req)` answers now: `202 Accepted` with
+ * `Location` and the run as JSON for a script, `303 See Other` for a browser
+ * (its `Accept` names `text/html`), which lands on the run's live status page.
+ * The gateway serves that page on the app's own origin; the app writes no
+ * polling code and no template. `req` is a Fetch `Request` or a Node
+ * `IncomingMessage`; without one the JSON answer is the one given.
  *
- * **Nothing here blocks on the work.** `start` resolves as soon as the run is
- * queued. `wait` exists, is for scripts and one-off tooling, and is never what
- * `start` does — an isolated workload's cold start alone is tens of seconds, so
- * a call that could resolve with a result would be one that sometimes holds a
- * request for a minute.
+ * `run.wait()` is for scripts and for one job waiting on another. **Called
+ * while serving a request it rejects** (`would_outlive_request`) unless its
+ * `timeoutMs` fits inside what is left of that request — the gateway puts the
+ * cut-off on every request it forwards, as `X-Toft-Request-Deadline`, and a
+ * wait that would outlive it ends as a 504 nobody can explain. The SDK sees the
+ * request two ways, both explicit: the headers given to `toft.viewer()` (every
+ * run started or read through that viewer carries them), and a `headers` option
+ * to `wait`. A WebSocket upgrade's headers carry no deadline, because its
+ * deadline is not the socket's.
+ *
+ * Which object you call says whether a run is attributed to a person —
+ * `toft.jobs` is the app acting as itself, `toft.viewer(headers).jobs` the app
+ * acting for the person looking at the page. A flag would make the anonymous
+ * case the default spelling of the attributed one, and attribution would then
+ * be lost by omission.
  *
  * **A repeated start is not a second run.** The platform derives an idempotency
  * key from the app, the job, the parameters and the resolved person; a start
  * matching a run already in flight, or one that finished in the last minute,
  * comes back as *that* run with `deduplicated` set. Reported, never silent.
  *
- * **A run you start may be retried, and this object follows the chain.** Retries
- * are off by default and switched on per job — on the app's Automation tab, or
- * as `retries = N` in `toft.toml` — never in code here. What the SDK does
- * is make sure the chain is not something you have to know about:
+ * **Params are the only input.** They are typed by `toft.toml`, recorded on the
+ * run and shown in its history, so they must not carry secrets and are capped
+ * at 64 KB. Anything bigger goes into the app's own storage first, and the param
+ * names where.
  *
- *   - `run.done` is **false** on a failed run the platform has already queued
- *     another attempt at. The work is still in progress, in a row with a
- *     different id, and reporting that as finished would announce a failure for
- *     something about to succeed.
- *   - `refresh()` returns the *newer attempt* when there is one, so `wait()`
- *     resolves on the outcome of the work rather than of the first try at it.
- *   - `run.attempt` is which try you are looking at, and `run.retriedBy` names
- *     the successor when one exists. Read them when the distinction matters;
- *     ignore them and the defaults are right.
- *
- * Which runs are eligible is the platform's rule, not this library's: a schedule
- * and anything the app started — including a run started on a viewer's behalf,
- * since the app fired it and did not block on it. A run somebody started from
- * the Toft panel is never retried behind them, and neither is one that ran
- * out of time or memory, because a second attempt would end the same way.
+ * **A run is never retried.** A failed run stays failed, with `failureReason`
+ * saying why in words; trying again is a person's decision (`toft job rerun`),
+ * which records the new run's `rerunOf`.
  */
 
 import { ToftError, transport } from "./transport.js";
+import { findHeader } from "./viewer.js";
 
 const JOBS_PATH = "/api/v1/app/jobs";
 const RUNS_PATH = "/api/v1/app/job-runs";
+
+/**
+ * When the request the app is serving will be cut off, RFC 3339. The gateway
+ * sets it on every request it forwards; it is absent outside one.
+ */
+export const REQUEST_DEADLINE_HEADER = "X-Toft-Request-Deadline";
 
 /** Statuses that will not change again. Polling stops here. */
 export const TERMINAL_STATUSES = new Set([
   "succeeded",
   "failed",
-  "cancelled",
   "timed_out",
-  "resource_exceeded",
-  "infrastructure_error",
+  "out_of_memory",
+  "cancelled",
+  "skipped",
 ]);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
- * This app already has as many runs in flight as it is allowed.
+ * The cut-off of the request these headers came in on, as a Date, or null.
+ *
+ * Null for a WebSocket upgrade: an app holding its handshake headers for the
+ * life of a socket would otherwise carry a deadline that passed hours ago and
+ * never meant anything.
+ */
+export function requestDeadline(headers) {
+  if (!headers) return null;
+  if (findHeader(headers, "Upgrade").toLowerCase() === "websocket") return null;
+  const raw = findHeader(headers, REQUEST_DEADLINE_HEADER);
+  if (!raw) return null;
+  const at = new Date(raw);
+  return Number.isNaN(at.getTime()) ? null : at;
+}
+
+/**
+ * This app already has as many runs queued as it is allowed.
  *
  * A first-class, actionable refusal carrying the numbers, so an app renders "3
  * runs already queued, and 3 is the limit" instead of putting a traceback in
@@ -88,96 +116,106 @@ export class QueueFull extends ToftError {
   }
 }
 
-/** A run, and everything an app can do with one. */
+/**
+ * A run, and everything an app can do with one.
+ *
+ * Timestamps are the platform's RFC 3339 text, or null where the run has not
+ * reached them.
+ */
 export class JobRun {
-  constructor(raw, headers) {
+  constructor(raw, headers, { requestDeadline = null } = {}) {
     const data = raw ?? {};
+    const text = (key) => (data[key] === undefined || data[key] === null || data[key] === "" ? null : String(data[key]));
     this.id = data.id ?? "";
-    this.status = data.status ?? "pending";
-    this.jobName = data.job_name ?? "";
+    this.job = data.job ?? "";
+    /** queued, running, succeeded, failed, timed_out, out_of_memory, cancelled or skipped. */
+    this.status = data.status ?? "queued";
+    /**
+     * app, viewer, cli, schedule or ui. `viewer` never says *which* person: an
+     * app does not learn that.
+     */
+    this.startedBy = data.started_by ?? "";
+    /** The run this one re-ran, when a person asked for that. */
+    this.rerunOf = text("rerun_of");
+    this.params = data.params ?? {};
+    this.scheduledFor = text("scheduled_for");
+    this.queuedAt = text("queued_at");
+    this.startedAt = text("started_at");
+    this.finishedAt = text("finished_at");
+    /** When the run will be stopped if it is still going. */
+    this.deadline = text("deadline");
     this.progress = data.progress ?? 0;
-    /** 1-based while pending, undefined once the run starts. */
-    this.queuePosition = data.queue_position || undefined;
+    this.progressMessage = text("progress_message");
+    /** 1-based while queued, null once the run starts. */
+    this.queuePosition = data.queue_position || null;
+    this.hasOutput = Boolean(data.has_output);
+    this.exitCode = data.exit_code ?? null;
+    this.failureStage = text("failure_stage");
+    /** Why it did not succeed, in words: `exit 3: connection refused`, `timed out after 45m`. */
+    this.failureReason = text("failure_reason");
+    this.peakMemoryMb = data.peak_memory_mb ?? null;
+    /** The run's live status page, on the app's own origin — where `respond` sends a browser. */
+    this.statusUrl = data.status_url ?? "";
+    this.logsUrl = data.logs_url ?? "";
     /** True when this start returned a run that already existed. */
     this.deduplicated = Boolean(data.deduplicated);
-    /**
-     * True when a person started this rather than the app itself. Never says
-     * *which* person: an app does not learn that.
-     */
-    this.startedByViewer = Boolean(data.started_by_viewer);
-    this.hasOutput = Boolean(data.has_output);
-    this.exitCode = data.exit_code;
-    this.failureStage = data.failure_stage ?? "";
-    this.failureReason = data.failure_reason ?? "";
-    /** The structured result the job recorded with `run.setResult`. */
-    this.result = data.result;
-    /**
-     * Which try this run is, and the run that superseded it when the platform
-     * queued another attempt. A failed run with `retriedBy` set is not the end
-     * of the story — see `done` and `refresh`.
-     */
-    this.attempt = data.attempt ?? 1;
-    this.retriedBy = data.retried_by ?? "";
-    /** The instant this run is for — its schedule's tick, or one a person
-     * named — as RFC 3339, or "" when nobody gave one. */
-    this.scheduledFor = data.scheduled_for ?? "";
     this.raw = data;
-    this._headers = headers ?? {};
+    // Not enumerable: the act-for blob is a bearer credential for somebody's
+    // session, and a console.log of a run is exactly where it should not land.
+    Object.defineProperty(this, "_headers", { value: headers ?? {}, enumerable: false });
+    Object.defineProperty(this, "_requestDeadline", { value: requestDeadline, enumerable: false });
   }
 
-  /**
-   * Whether this run will change again.
-   *
-   * A failed run the platform has already queued another attempt at is *not*
-   * done: the work is still in progress, in a row with a different id. Reading
-   * only this row's status there would report a failure for something that is
-   * about to succeed.
-   */
+  /** The run as the platform sent it — what `respond` answers with. */
+  toJSON() {
+    return Object.keys(this.raw).length ? this.raw : { id: this.id, job: this.job, status: this.status };
+  }
+
+  /** Whether this run will change again. */
   get done() {
-    return TERMINAL_STATUSES.has(this.status) && !this.retriedBy;
+    return TERMINAL_STATUSES.has(this.status);
   }
 
   get succeeded() {
     return this.status === "succeeded";
   }
 
+  /** Started in a person's name rather than by the app itself. */
+  get startedByViewer() {
+    return this.startedBy === "viewer";
+  }
+
   /**
-   * Killed for exceeding its limits, rather than crashing. Worth telling apart
+   * Stopped for exceeding its limits, rather than crashing. Worth telling apart
    * because the fix is different: a bigger limit or less work, not a code
    * change.
    */
   get outOfResources() {
-    return this.status === "resource_exceeded" || this.status === "timed_out";
+    return this.status === "timed_out" || this.status === "out_of_memory";
   }
 
-  /**
-   * Re-read this run.
-   *
-   * **Follows a retry.** If the platform has queued another attempt at this
-   * work, the handle you get back is that attempt — same chain, newer row. An
-   * app that started a run and waits on it should see the outcome of the work,
-   * not of the first try at it; `attempt` and `raw.retry_of` are there for
-   * anyone who needs the distinction.
-   */
+  #again(raw) {
+    return new JobRun(raw, this._headers, { requestDeadline: this._requestDeadline });
+  }
+
+  /** Re-read this run. */
   async refresh() {
-    const run = new JobRun(
-      await transport().get(`${RUNS_PATH}/${this.id}`, this._headers),
-      this._headers,
-    );
-    if (!run.retriedBy) return run;
-    return new JobRun(
-      await transport().get(`${RUNS_PATH}/${run.retriedBy}`, this._headers),
-      this._headers,
-    );
+    return this.#again(await transport().get(`${RUNS_PATH}/${encodeURIComponent(this.id)}`, this._headers));
   }
 
   /**
-   * Resolve when the run finishes.
+   * Resolve with the run in its final state.
    *
-   * For scripts and one-off tooling. **Never call this on a request path** —
-   * that is the twelve-minute block this whole feature exists to remove.
+   * For scripts and jobs. **On a request path it rejects**
+   * (`would_outlive_request`) unless `timeoutMs` fits inside what is left of the
+   * request — see the top of this file for how the request is seen; `headers` is
+   * the explicit way to say "I am serving this one". The answer there is
+   * `toft.jobs.respond(run, req)`.
+   *
+   * Rejects with `wait_timeout` (retryable) when `timeoutMs` passes first.
    */
-  async wait({ timeoutMs, pollIntervalMs = 2000 } = {}) {
+  async wait({ timeoutMs, pollIntervalMs = 2000, headers } = {}) {
+    this.#guardRequest(timeoutMs, headers);
     const deadline = timeoutMs === undefined ? undefined : Date.now() + timeoutMs;
     let current = this;
     for (;;) {
@@ -195,6 +233,27 @@ export class JobRun {
     }
   }
 
+  #guardRequest(timeoutMs, headers) {
+    const cutoff = headers !== undefined ? requestDeadline(headers) : this._requestDeadline;
+    if (!cutoff) return;
+    const leftMs = cutoff.getTime() - Date.now();
+    if (timeoutMs !== undefined && timeoutMs <= leftMs) return;
+    const asked = timeoutMs === undefined ? "no timeout" : `a ${timeoutMs}ms timeout`;
+    throw new ToftError(
+      `wait() on run ${this.id} would outlive the request it is serving: the gateway cuts ` +
+        `this request off in ${Math.max(Math.round(leftMs / 1000), 0)}s, and this wait has ` +
+        `${asked}. Answer the request now with toft.jobs.respond(run, req) — a browser lands ` +
+        `on the run's live status page — and let the run finish on its own.`,
+      {
+        body: {
+          code: "would_outlive_request",
+          retryable: false,
+          hint: "return toft.jobs.respond(run)",
+        },
+      },
+    );
+  }
+
   /**
    * Fetch this run's output object, or an empty buffer if it produced none.
    *
@@ -208,7 +267,7 @@ export class JobRun {
    * nothing behind it is the worst failure shape available here.
    */
   async output() {
-    return transport().follow(`${RUNS_PATH}/${this.id}/output`, this._headers);
+    return transport().follow(`${RUNS_PATH}/${encodeURIComponent(this.id)}/output`, this._headers);
   }
 
   /**
@@ -220,9 +279,10 @@ export class JobRun {
     return raw && raw.length ? JSON.parse(Buffer.from(raw).toString("utf8")) : null;
   }
 
+  /** Log lines after `afterSeq`: `{seq, at, stream, line}` each. */
   async logs(afterSeq = 0) {
     const raw = await transport().get(
-      `${RUNS_PATH}/${this.id}/logs?after=${afterSeq}`,
+      `${RUNS_PATH}/${encodeURIComponent(this.id)}/logs?after=${Number(afterSeq)}`,
       this._headers,
     );
     return raw?.lines ?? [];
@@ -255,10 +315,28 @@ export class JobRun {
    * through the wrong one of those rejects rather than quietly doing nothing.
    */
   async cancel() {
-    await transport().postJson(`${RUNS_PATH}/${this.id}/cancel`, undefined, {
+    await transport().postJson(`${RUNS_PATH}/${encodeURIComponent(this.id)}/cancel`, undefined, {
       headers: this._headers,
     });
   }
+}
+
+/**
+ * Answer the request that started `run`, without waiting for it: a Fetch
+ * `Response`. A browser (`Accept` naming `text/html`) gets `303 See Other` to
+ * the run's live status page; anything else `202 Accepted` with `Location` and
+ * the run as JSON. `req` is a Fetch `Request`, a Node `IncomingMessage`, or
+ * just their headers.
+ */
+export function respond(run, req) {
+  const headers = req?.headers ?? req;
+  const html = findHeader(headers, "Accept").toLowerCase().includes("text/html");
+  const location = run.statusUrl ? { Location: run.statusUrl } : {};
+  if (html) return new Response(null, { status: 303, headers: location });
+  return new Response(JSON.stringify(run), {
+    status: 202,
+    headers: { ...location, "Content-Type": "application/json" },
+  });
 }
 
 /**
@@ -269,47 +347,64 @@ export class JobRun {
  * which the app cannot mint, alter, or read.
  */
 export class Jobs {
-  constructor(headers) {
-    this._headers = headers ?? {};
+  constructor(headers, { requestDeadline = null } = {}) {
+    Object.defineProperty(this, "_headers", { value: headers ?? {}, enumerable: false });
+    this._requestDeadline = requestDeadline;
+  }
+
+  #run(raw) {
+    return new JobRun(raw, this._headers, { requestDeadline: this._requestDeadline });
   }
 
   /**
    * Queue a run and resolve with its handle immediately.
    *
-   * `params` are recorded against the run for reproducibility and audit, so
-   * they must not carry secrets — those belong in the app's managed
-   * environment, which a run references rather than copies.
+   * `params` are checked against the job's `[jobs.<name>.params]` — a missing,
+   * mistyped or out-of-choice one is refused here (`param_required`,
+   * `param_type`, `param_choice`), not an hour into the run. They are recorded
+   * and shown, so they must not carry secrets.
    *
-   * `payload` is bulk input, stored in the object store and handed to the run
-   * as a presigned URL; the job reads it with `run.readInputJson()`.
-   *
-   * `idempotencyKey` overrides the derived one. The derivation is already
-   * correct for the case that actually bites, so pass one only when the app has
-   * a better notion of "the same request" than the parameters give.
+   * `idempotencyKey` overrides the derived one (and holds for 24 hours rather
+   * than a minute). The derivation is already right for the case that actually
+   * bites, so pass one only when the app has a better notion of "the same
+   * request" than the parameters give.
    */
-  async start(job, { params, payload, idempotencyKey } = {}) {
+  async start(job, { params, idempotencyKey, ...rest } = {}) {
+    if (Object.keys(rest).length) {
+      // An option this version does not take — `payload` most likely — is
+      // refused rather than dropped: a run started without the input its
+      // caller meant to give it fails somewhere much harder to read.
+      throw new ToftError(
+        `jobs.start does not take ${Object.keys(rest).join(", ")}: params are a run's only ` +
+          `input, and anything bigger belongs in the app's storage, named by a param`,
+        { body: { code: "bad_request", retryable: false } },
+      );
+    }
     const body = {};
     if (params) body.params = params;
-    if (payload !== undefined) body.payload = payload;
-
     try {
-      const raw = await transport().postJson(`${JOBS_PATH}/${job}/runs`, body, {
+      const raw = await transport().postJson(`${JOBS_PATH}/${encodeURIComponent(job)}/runs`, body, {
         idempotencyKey,
         headers: this._headers,
       });
-      return new JobRun(raw, this._headers);
+      return this.#run(raw);
     } catch (err) {
       throw typed(err);
     }
   }
 
-  async get(runId) {
-    return new JobRun(await transport().get(`${RUNS_PATH}/${runId}`, this._headers), this._headers);
+  /** `respond(run, req)`, reached from the surface that started the run. */
+  respond(run, req) {
+    return respond(run, req);
   }
 
-  /** Every run of this app, newest first. */
-  async list({ job, limit = 50 } = {}) {
-    return this.#list("app", job, limit);
+  async get(runId) {
+    return this.#run(await transport().get(`${RUNS_PATH}/${encodeURIComponent(runId)}`, this._headers));
+  }
+
+  /** Every run of this app, newest first — of one job, in one status, when given. */
+  async list({ job, status, limit = 50 } = {}) {
+    return this.#list("app", { job, status, limit });
   }
 
   /**
@@ -326,23 +421,33 @@ export class Jobs {
    * is empty, because the filter runs against a principal the platform resolved
    * itself.
    */
-  async mine(job, { limit = 20 } = {}) {
+  async mine(options = {}) {
+    if (typeof options !== "object" || options === null) {
+      // The old `mine(job, { limit })`: destructuring a string would drop the
+      // job filter and answer with every job's runs, which reads as right.
+      throw new ToftError(
+        `mine() takes one options object — mine({ job: ${JSON.stringify(options)}, limit })`,
+        { body: { code: "bad_request", retryable: false, hint: "mine({ job, limit })" } },
+      );
+    }
+    const { job, limit = 20 } = options;
     if (!Object.keys(this._headers).length) {
       throw new ToftError(
         "mine() needs a viewer — call it on toft.viewer(req.headers).jobs. The app acting " +
           "as itself has no viewer to scope to, and answering with every run would be a " +
           "silent widening rather than an answer.",
-        { body: { code: "viewer_required", retryable: false } },
+        { body: { code: "no_viewer", retryable: false, hint: "call it on toft.viewer(req.headers).jobs" } },
       );
     }
-    return this.#list("viewer", job, limit);
+    return this.#list("viewer", { job, limit });
   }
 
-  async #list(scope, job, limit) {
+  async #list(scope, { job, status, limit }) {
     let query = `?scope=${scope}&limit=${Number(limit)}`;
     if (job) query += `&job=${encodeURIComponent(job)}`;
+    if (status) query += `&status=${encodeURIComponent(status)}`;
     const raw = await transport().get(`${RUNS_PATH}${query}`, this._headers);
-    return (raw?.runs ?? []).map((r) => new JobRun(r, this._headers));
+    return (raw?.runs ?? []).map((r) => this.#run(r));
   }
 }
 

@@ -24,6 +24,21 @@ ENV_RUN_ID <- "TOFT_RUN_ID"
 ENV_JOB_NAME <- "TOFT_JOB_NAME"
 ENV_SCHEDULED_FOR <- "TOFT_SCHEDULED_FOR"
 
+# What else the runner exports to a job, read by current_run().
+ENV_JOB_TOKEN <- "TOFT_JOB_TOKEN"
+ENV_PARAMS <- "TOFT_PARAMS"
+ENV_RERUN_OF <- "TOFT_RERUN_OF"
+ENV_DEADLINE <- "TOFT_DEADLINE"
+ENV_OUTPUT_URI <- "TOFT_OUTPUT_URI"
+ENV_TRIGGER <- "TOFT_TRIGGER"
+ENV_TRIGGER_ROLE <- "TOFT_TRIGGER_ROLE"
+
+# The runner callback contract a job's run_progress() speaks, and it must equal
+# the platform's runner.ContractVersion: the platform reports a skew as a 409
+# rather than tolerating it. The same literal the other three SDKs carry.
+RUNNER_CONTRACT_VERSION <- "2"
+RUNNER_VERSION_HEADER <- "X-Toft-Runner-Version"
+
 # The app contract version this SDK speaks, sent on every /api/v1/app/* call.
 # The platform refuses a mismatch rather than tolerating it, so a partial
 # upgrade fails loudly instead of half-working in a way nobody traces back to a
@@ -65,10 +80,9 @@ require_env <- function(name) {
 # architectural, so it has to be in the sentence.
 #
 # TOFT_RUN_ID is what says we are inside a job; the runner exports it for
-# every run and for nothing else. The second way round it differs from the other
-# three SDKs because this package differs: it carries the app API and no runner
-# surface at all, so there is no set_result() here to hand a result back with.
-# What an R job has is its mounts, which are a filesystem and need no token.
+# every run and for nothing else. Same branch, same wording, in all four SDKs:
+# the way round it is the run's output, run_write_output(), or one of its
+# mounts.
 missing_env <- function(name) {
   run_id <- trimws(Sys.getenv(ENV_RUN_ID, ""))
   if (identical(name, ENV_APP_TOKEN) && nzchar(run_id)) {
@@ -77,11 +91,10 @@ missing_env <- function(name) {
     return(sprintf(
       paste0(
         "%s is not set because this is a job (%s), and a job is deliberately given ",
-        "no app token - this is not a broken deploy. app_data_get(), app_info() ",
-        "and notify() belong to the process serving this app's requests, and a ",
-        "job serves none. Two ways round it: do this from the service process, or ",
-        "write what the run produced into one of its mounts (see mounts()) and let ",
-        "an endpoint fold it in."
+        "no app token - this is not a broken deploy. app_data_get() and app_info() ",
+        "belong to the process serving this app's requests, and a job serves none. ",
+        "Two ways round it: do this from the service process, or carry the result ",
+        "out of the run with run_write_output() and let an endpoint fold it in."
       ),
       name, where
     ))

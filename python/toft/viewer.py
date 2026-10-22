@@ -5,6 +5,7 @@
     me = toft.viewer(st.context.headers)      # Flask/FastAPI: request.headers
     run = me.jobs.start("reconcile", params={"month": month})
     recent = me.jobs.mine("reconcile", limit=20)
+    return toft.jobs.respond(run)             # answer now; never wait here
 
 **The app never asserts who the viewer is.** What it relays is a blob the
 platform signed over ``(user, app, session)`` on its way through the gateway.
@@ -41,7 +42,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .errors import ToftError
-from .jobs import Jobs
+from .jobs import Jobs, request_deadline
 from .session import transport
 
 #: The request header the Toft proxy sets on its way to the app. Case
@@ -55,8 +56,8 @@ ACT_FOR_HEADER = "X-Toft-Act-For"
 #: A per-widget Streamlit rerun must not become a request per rerun, and 60
 #: seconds is the honest trade rather than a tuned number. What it buys and what
 #: it costs, plainly: **a role change takes effect in the app within the TTL,
-#: not instantly.** Where the *platform* enforces — starting a job, running a
-#: scheduled task — it re-resolves live and this cache is irrelevant. Where the
+#: not instantly.** Where the *platform* enforces — starting a job, firing a
+#: schedule — it re-resolves live and this cache is irrelevant. Where the
 #: *app* enforces, the app is the enforcer and the window is the app's to accept
 #: or to shorten. ``who(headers, refresh=True)`` bypasses it for the one call an
 #: app wants to be certain about.
@@ -130,10 +131,11 @@ class Viewer:
 
     __slots__ = ("_blob", "jobs")
 
-    def __init__(self, blob: str) -> None:
+    def __init__(self, blob: str, request_deadline: Any = None) -> None:
         self._blob = blob
-        #: The job surface, with this viewer attached.
-        self.jobs = Jobs({ACT_FOR_HEADER: blob})
+        #: The job surface, with this viewer attached — and the request it came
+        #: in on, so a ``wait()`` that would outlive that request refuses.
+        self.jobs = Jobs({ACT_FOR_HEADER: blob}, request_deadline)
 
     def identity(self, refresh: bool = False) -> Identity | None:
         """Resolve who this viewer is, or ``None`` if there is nobody to name.
@@ -155,6 +157,10 @@ def viewer(headers: Mapping[str, Any] | Any) -> Viewer:
     Accepts anything header-shaped: a plain mapping, ``request.headers`` from
     Flask or FastAPI, ``st.context.headers`` from Streamlit. Raises when the
     act-for header is absent, naming it and the likely cause.
+
+    The request's ``X-Toft-Request-Deadline`` is kept too, and every run
+    started or read through this viewer carries it: that is what lets
+    ``run.wait()`` refuse to outlive the request (``would_outlive_request``).
     """
     blob = _find_header(headers, ACT_FOR_HEADER)
     if not blob:
@@ -167,9 +173,13 @@ def viewer(headers: Mapping[str, Any] | Any) -> Viewer:
             f"direct port, or a local development server. Use toft.jobs "
             f"to act as the app itself, deliberately, rather than treating this as the "
             f"same thing.",
-            body={"code": "no_viewer", "retryable": False},
+            body={
+                "code": "no_viewer",
+                "retryable": False,
+                "hint": "use toft.jobs.start(...) to start it as the app",
+            },
         )
-    return Viewer(blob)
+    return Viewer(blob, request_deadline(headers))
 
 
 def _find_header(headers: Any, name: str) -> str:
