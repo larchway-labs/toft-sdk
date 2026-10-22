@@ -404,9 +404,12 @@ export function scratchDir(...parts) {
  */
 export function sessionScratchDir(sessionId, ...parts) {
   if (!sessionId) {
-    throw new Error(
+    // Coded like every other refusal the SDK makes before a request, which is
+    // what the skill promises; a bare Error carried no code.
+    throw new ToftError(
       "sessionScratchDir needs a non-empty session id — an empty one would " +
         "silently collapse every session into the same directory",
+      { body: { code: "bad_request", retryable: false } },
     );
   }
   const encoded = createHash("sha256").update(String(sessionId)).digest("hex").slice(0, 32);

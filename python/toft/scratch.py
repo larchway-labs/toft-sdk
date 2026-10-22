@@ -60,6 +60,8 @@ import secrets
 import tempfile
 from pathlib import Path
 
+from .errors import ToftError
+
 ENV_SCRATCH_DIR = "TOFT_SCRATCH_DIR"
 
 # The request header carrying the viewer's opaque per-login session id.
@@ -115,9 +117,12 @@ def session_scratch_dir(session_id: str, *parts: str) -> Path:
     scratch root.
     """
     if not session_id:
-        raise ValueError(
+        # Coded like every other refusal the SDK makes before a request, which
+        # is what the skill promises; a bare ValueError carried no code.
+        raise ToftError(
             "session_scratch_dir needs a non-empty session id — an empty one "
-            "would silently collapse every session into the same directory"
+            "would silently collapse every session into the same directory",
+            body={"code": "bad_request", "retryable": False},
         )
     encoded = hashlib.sha256(session_id.encode()).hexdigest()[:32]
     return scratch_dir(encoded, *parts)
