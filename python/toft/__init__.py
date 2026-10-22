@@ -75,8 +75,11 @@ by omission. See :mod:`toft.viewer`.
 to act for — a silent downgrade would move a run out of somebody's name and into
 nobody's. ``toft.who(headers)`` is *who is this*, and returns ``None`` for an
 anonymous visitor because that is an answer rather than a failure. It raises for
-one thing only: an app an administrator has not enabled viewer identity on,
-which is a configuration gap to close and not a runtime state to branch on.
+one thing only: a request carrying a signed-in viewer to an app an administrator
+has not enabled viewer identity on, which is a configuration gap to close and not
+a runtime state to branch on. A request with nobody on it (anonymous, or an API
+key) is ``None`` whatever the setting; ``toft.app.can("viewer.identity")`` reads
+the setting itself.
 
 **A scheduled task's log is the one thing the platform cannot capture for you.**
 Toft triggers a task by making an HTTP request to a path you published; it
@@ -219,4 +222,4 @@ __version__ = "0.3.0"
 # platform refuses a mismatch rather than tolerating it, so a partial upgrade
 # fails loudly instead of behaving strangely. The app contract
 # (/api/v1/app/*) is versioned separately — see toft.env.
-CONTRACT_VERSION = "1"
+CONTRACT_VERSION = "2"

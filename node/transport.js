@@ -117,7 +117,16 @@ export class ToftError extends Error {
 export function require_(name) {
   const value = (process.env[name] ?? "").trim();
   if (value) return value;
-  throw new ToftError(missing(name), { offPlatform: true });
+  throw new ToftError(missing(name), { offPlatform: true, body: { code: missingCode(name), retryable: false } });
+}
+
+/**
+ * The code missing()'s sentence carries: job_send_only — the platform's own
+ * word for the same rule — when a job asked for the app token, off_platform
+ * otherwise. Neither is helped by trying again.
+ */
+function missingCode(name) {
+  return name === ENV_APP_TOKEN && (process.env[ENV_RUN_ID] ?? "").trim() ? "job_send_only" : "off_platform";
 }
 
 /**

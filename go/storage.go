@@ -72,12 +72,12 @@ func (m Mount) Put(source, name string) (string, error) {
 		return "", err
 	}
 	if !m.Mounted() {
-		return "", &Error{Message: fmt.Sprintf(
+		return "", &Error{Body: refusal("not_mounted"), Message: fmt.Sprintf(
 			"%q is not mounted here, so Put has nowhere to copy to — use Upload, which "+
 				"reaches it through the platform", m.Name)}
 	}
 	if m.ReadOnly() {
-		return "", &Error{Message: fmt.Sprintf(
+		return "", &Error{Body: refusal("insufficient_access"), Message: fmt.Sprintf(
 			"%q is mounted read-only, so this app cannot write to it. An administrator "+
 				"sets the access level where the resource is mapped.", m.Name)}
 	}
@@ -113,7 +113,7 @@ func (m Mount) Put(source, name string) (string, error) {
 // worst case — rather than into the storage it was given.
 func checkRelativeName(name string) error {
 	refuse := func(format string, args ...any) error {
-		return &Error{Message: fmt.Sprintf(format, args...)}
+		return &Error{Body: refusal("invalid_name"), Message: fmt.Sprintf(format, args...)}
 	}
 	switch {
 	case name == "":
@@ -186,7 +186,7 @@ func StorageIn(name, folder string) (Mount, error) { return storageIn(name, &fol
 
 func storageIn(name string, folder *string) (Mount, error) {
 	if name == "" {
-		return Mount{}, &Error{Message: "Storage needs the name an administrator gave the resource"}
+		return Mount{}, &Error{Body: refusal("invalid_name"), Message: "Storage needs the name an administrator gave the resource"}
 	}
 	available, err := Mounts()
 	if err != nil {
@@ -206,19 +206,19 @@ func storageIn(name string, folder *string) (Mount, error) {
 			}
 		}
 		if len(named) > 0 {
-			return Mount{}, &Error{Message: fmt.Sprintf(
+			return Mount{}, &Error{Body: refusal("not_mapped"), Message: fmt.Sprintf(
 				"%q is mounted, but not at folder %q. Mounted here: %s",
 				name, *folder, describeFolders(named))}
 		}
 	case len(named) == 1:
 		return named[0], nil
 	case len(named) > 1:
-		return Mount{}, &Error{Message: fmt.Sprintf(
+		return Mount{}, &Error{Body: refusal("ambiguous_mount"), Message: fmt.Sprintf(
 			"%d mounts are named %q — %s. Name one: toft.StorageIn(%q, %q)",
 			len(named), name, describeFolders(named), name, named[0].Folder)}
 	}
 	if len(available) == 0 {
-		return Mount{}, &Error{Message: fmt.Sprintf(
+		return Mount{}, &Error{Body: refusal("not_mapped"), Message: fmt.Sprintf(
 			"no storage resource named %q, and this app has none mapped at all — an "+
 				"administrator maps storage on the app's Storage tab", name)}
 	}
@@ -227,7 +227,7 @@ func storageIn(name string, folder *string) (Mount, error) {
 		names = append(names, mount.Name)
 	}
 	sort.Strings(names)
-	return Mount{}, &Error{Message: fmt.Sprintf(
+	return Mount{}, &Error{Body: refusal("not_mapped"), Message: fmt.Sprintf(
 		"no storage resource named %q. Mapped to this app: %s", name, strings.Join(names, ", "))}
 }
 
@@ -274,10 +274,18 @@ func checkStore(name string, mount Mount, err error) (Mount, error) {
 		return Mount{}, err
 	}
 	if mount.Kind != "" && mount.Kind != "store" {
-		return Mount{}, &Error{Message: fmt.Sprintf(
+		return Mount{}, &Error{Body: refusal("not_a_store"), Message: fmt.Sprintf(
 			"%q is a %s, not a store. A volume is a real filesystem — write to the path "+
 				"toft.Storage(%q) resolves, with the ordinary os and filepath calls.",
 			name, mount.Kind, name)}
 	}
 	return mount, nil
+}
+
+// refusal is the envelope a refusal this SDK makes itself carries. None of them
+// is helped by trying again — a mapping, a name or a level is wrong — and with
+// no body the status rule would call a statusless error retryable, which is the
+// answer for a network failure. So each says so, with a code to branch on.
+func refusal(code string) map[string]any {
+	return map[string]any{"code": code, "retryable": false}
 }

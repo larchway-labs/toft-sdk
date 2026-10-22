@@ -55,9 +55,11 @@
  * `toft.viewer(headers)` is *act as this person* and throws when there is nobody
  * to act for. `toft.who(headers)` is *who is this*, and resolves to `null` for an
  * anonymous visitor because that is an answer rather than a failure. It throws
- * for one thing only: an app an administrator has not enabled viewer identity
- * on, which is a configuration gap to close and not a runtime state to branch
- * on.
+ * for one thing only: a request carrying a signed-in viewer to an app an
+ * administrator has not enabled viewer identity on, which is a configuration
+ * gap to close and not a runtime state to branch on. A request with nobody on
+ * it (anonymous, or an API key) is `null` whatever the setting;
+ * `toft.app.can("viewer.identity")` reads the setting itself.
  *
  * **A scheduled task's log is the one thing the platform cannot capture for
  * you.** Toft triggers a task by making an HTTP request to a path you
@@ -189,6 +191,13 @@ async function runnerRequest(baseUrl, token, method, path, body, timeoutMs = DEF
  * the other is a job that took too long. The same two sentences the Python SDK
  * raises.
  */
+/** The code for the two refusals inputRefusal() explains; any other status is left to the status rule. */
+function inputRefusalBody(status) {
+  if (status === 404) return { code: "input_not_given", retryable: false };
+  if (status === 403 || status === 410) return { code: "input_expired", retryable: false };
+  return undefined;
+}
+
 function inputRefusal(status) {
   if (status === 404) {
     return (
@@ -305,7 +314,9 @@ export class Run {
   async readInput() {
     if (!this.inputUri) return null;
     const resp = await fetch(this.inputUri);
-    if (!resp.ok) throw new ToftError(inputRefusal(resp.status), { status: resp.status });
+    if (!resp.ok) {
+      throw new ToftError(inputRefusal(resp.status), { status: resp.status, body: inputRefusalBody(resp.status) });
+    }
     return resp.arrayBuffer();
   }
 
@@ -320,7 +331,9 @@ export class Run {
    * then make an app written against it unable to move to isolated mode.
    */
   async writeOutput(data) {
-    if (!this.outputUri) throw new ToftError("this run has no output location");
+    if (!this.outputUri) {
+      throw new ToftError("this run has no output location", { body: { code: "no_output", retryable: false } });
+    }
     const resp = await fetch(this.outputUri, { method: "PUT", body: data });
     if (!resp.ok) throw new ToftError(`uploading output: ${resp.statusText}`, { status: resp.status });
   }

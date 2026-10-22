@@ -190,7 +190,8 @@ func (r *Run) ReadInput(ctx context.Context) ([]byte, error) {
 	if err != nil {
 		var e *Error
 		if errors.As(err, &e) && e.Status != 0 {
-			return nil, &Error{Message: inputRefusal(e.Status), Status: e.Status, Wrapped: err}
+			return nil, &Error{Body: inputRefusalBody(e.Status), Message: inputRefusal(e.Status),
+				Status: e.Status, Wrapped: err}
 		}
 		return nil, err
 	}
@@ -204,6 +205,19 @@ func (r *Run) ReadInput(ctx context.Context) ([]byte, error) {
 // the fixes are opposite: one is a job asking for something it was never given,
 // the other is a job that took too long. The same two sentences the Python and
 // Node SDKs raise.
+// inputRefusalBody names the two refusals [inputRefusal] explains, so an agent
+// branches on input_expired rather than on the sentence. Any other status is
+// left to the status rule: a 503 from the object store is worth another try.
+func inputRefusalBody(status int) map[string]any {
+	switch status {
+	case http.StatusNotFound:
+		return refusal("input_not_given")
+	case http.StatusForbidden, http.StatusGone:
+		return refusal("input_expired")
+	}
+	return nil
+}
+
 func inputRefusal(status int) string {
 	switch status {
 	case http.StatusNotFound:
@@ -238,7 +252,7 @@ func (r *Run) ReadInputJSON(ctx context.Context, value any) error {
 // to move to isolated mode.
 func (r *Run) WriteOutput(ctx context.Context, body []byte) error {
 	if r.OutputURI == "" {
-		return &Error{Message: "this run has no output location"}
+		return &Error{Body: refusal("no_output"), Message: "this run has no output location"}
 	}
 	ctx, cancel := context.WithTimeout(ctx, uploadTimeout)
 	defer cancel()

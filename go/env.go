@@ -51,7 +51,19 @@ func require(name string) (string, error) {
 	if value := strings.TrimSpace(os.Getenv(name)); value != "" {
 		return value, nil
 	}
-	return "", &Error{Message: missing(name)}
+	return "", &Error{Body: refusal(missingCode(name)), Message: missing(name)}
+}
+
+// missingCode is the code [missing]'s sentence carries: job_send_only — the
+// platform's own word for the same rule — when a job asked for the app token,
+// off_platform otherwise. Neither is helped by trying again, and without a
+// code a statusless error read as retryable, which is a network failure's
+// answer.
+func missingCode(name string) string {
+	if name == EnvAppToken && strings.TrimSpace(os.Getenv(EnvRunID)) != "" {
+		return "job_send_only"
+	}
+	return "off_platform"
 }
 
 // missing is why the variable is absent, in the two cases that differ.

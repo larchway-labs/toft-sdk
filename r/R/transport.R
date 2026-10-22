@@ -85,6 +85,20 @@ toft_request <- function(method, path, body = NULL, query = NULL, extra_headers 
 # that never reached a handler — a proxy's HTML page, an install older than
 # the envelope. The message is the one this transport has always raised, so
 # code matching it keeps working.
+# toft_refusal is a refusal the SDK makes itself — a name nothing maps, a folder
+# mounted twice, a level too low — as the same `toft_error` condition the
+# platform's refusals are, so `tryCatch(..., toft_error = )` catches both and
+# `e$code` names it. Never retryable: a mapping or a name is wrong, and trying
+# again changes neither. `status` is NA because no request was made.
+toft_refusal <- function(code, message) {
+  structure(
+    class = c("toft_error", "error", "condition"),
+    list(message = message, call = NULL, status = NA_integer_, code = code,
+         retryable = FALSE, hint = NULL, retry_after = NULL,
+         body = list(code = code, retryable = FALSE))
+  )
+}
+
 toft_error <- function(method, path, resp, text) {
   status <- resp$status_code
   body <- tryCatch(jsonlite::fromJSON(text, simplifyVector = FALSE),

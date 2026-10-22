@@ -77,7 +77,7 @@ class Mount:
     @property
     def path(self) -> Path:
         if not self.mounted:
-            raise ToftError(
+            raise _refused("not_mounted",
                 f"{self.name!r} is not mounted here — on this install the app reaches it "
                 f"through the platform: use list(), upload(), download() or url()"
             )
@@ -122,7 +122,7 @@ class Mount:
             _send(signed, data)
         except ToftError as exc:
             if exc.status == 412:
-                raise ToftError(
+                raise _refused("already_exists",
                     f"{target!r} already exists in {self.name!r}, and this app's access "
                     f"({self.access}) creates new objects only", status=412) from None
             raise
@@ -162,7 +162,7 @@ class Mount:
         """``route`` is the platform's route, spelled whole so a reader — and the
         SDK contract test — sees which one each call reaches."""
         if self.kind and self.kind != "store":
-            raise ToftError(
+            raise _refused("not_a_store",
                 f"{self.name!r} is a {self.kind}, which is reached at its path — only an "
                 f"object store is reached over signed URLs")
         # The folder always travels, "" included: it names *this* mapping, so a
@@ -196,12 +196,12 @@ class Mount:
         _check_relative_name(target_name)
 
         if not self.mounted:
-            raise ToftError(
+            raise _refused("not_mounted",
                 f"{self.name!r} is not mounted here, so put() has nowhere to copy to — "
                 f"use upload(), which reaches it through the platform"
             )
         if self.read_only:
-            raise ToftError(
+            raise _refused("insufficient_access",
                 f"{self.name!r} is mounted read-only, so this app cannot write to it. "
                 f"An administrator sets the access level where the resource is mapped."
             )
@@ -261,6 +261,17 @@ def _send(signed: Any, data: "bytes | None") -> bytes:
         raise ToftError(f"cannot reach the object store: {exc.reason}") from None
 
 
+def _refused(code: str, message: str, status: int | None = None) -> ToftError:
+    """A refusal this SDK makes itself, carrying the platform's envelope.
+
+    None of these is helped by trying again — a mapping, a name or a level is
+    wrong — and without a body the status rule would call a statusless error
+    retryable, which is the answer for a network failure. So each says so, with
+    a code an app can branch on, exactly as a refusal from the platform does.
+    """
+    return ToftError(message, status=status, body={"code": code, "retryable": False})
+
+
 def _check_relative_path(path: str) -> None:
     """A listing path: a relative name, with one trailing slash allowed."""
     _check_relative_name(path[:-1] if path.endswith("/") else path)
@@ -275,14 +286,14 @@ def _check_relative_name(name: str) -> None:
     code, in the worst case — rather than into the storage it was given.
     """
     if not name:
-        raise ToftError("a name is required")
+        raise _refused("invalid_name", "a name is required")
     if name.startswith("/") or name.endswith("/"):
-        raise ToftError(f"a name is relative to the mount, got {name!r}")
+        raise _refused("invalid_name", f"a name is relative to the mount, got {name!r}")
     if "\\" in name:
-        raise ToftError(f"a name must use forward slashes, got {name!r}")
+        raise _refused("invalid_name", f"a name must use forward slashes, got {name!r}")
     for segment in name.split("/"):
         if segment in ("", ".", ".."):
-            raise ToftError(f"a name must not contain {segment!r} segments, got {name!r}")
+            raise _refused("invalid_name", f"a name must not contain {segment!r} segments, got {name!r}")
 
 
 def mounts() -> list[Mount]:
@@ -302,9 +313,9 @@ def mounts() -> list[Mount]:
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError as exc:
-        raise ToftError(f"{ENV_STORAGE} is not valid JSON: {exc}") from None
+        raise _refused("storage_env_invalid", f"{ENV_STORAGE} is not valid JSON: {exc}") from None
     if not isinstance(parsed, list):
-        raise ToftError(f"{ENV_STORAGE} should be a JSON array, got {type(parsed).__name__}")
+        raise _refused("storage_env_invalid", f"{ENV_STORAGE} should be a JSON array, got {type(parsed).__name__}")
 
     out: list[Mount] = []
     for entry in parsed:
@@ -343,7 +354,7 @@ def storage(name: str, folder: str | None = None) -> Mount:
     root explicitly.
     """
     if not name:
-        raise ToftError("storage() needs the name an administrator gave the resource")
+        raise _refused("invalid_name", "storage() needs the name an administrator gave the resource")
     available = mounts()
     named = [m for m in available if m.name == name]
 
@@ -352,25 +363,25 @@ def storage(name: str, folder: str | None = None) -> Mount:
             if mount.folder == folder:
                 return mount
         if named:
-            raise ToftError(
+            raise _refused("not_mapped",
                 f"{name!r} is mounted, but not at folder {folder!r}. "
                 f"Mounted here: {_folders(named)}"
             )
     elif len(named) == 1:
         return named[0]
     elif len(named) > 1:
-        raise ToftError(
+        raise _refused("ambiguous_mount",
             f"{len(named)} mounts are named {name!r} — {_folders(named)}. "
             f"Name one: toft.storage({name!r}, folder={named[0].folder!r})"
         )
 
     if not available:
-        raise ToftError(
+        raise _refused("not_mapped",
             f"no storage resource named {name!r}, and this app has none mapped at "
             f"all — an administrator maps storage on the app's Storage tab"
         )
     names = ", ".join(sorted(m.name for m in available)) or "(none)"
-    raise ToftError(f"no storage resource named {name!r}. Mapped to this app: {names}")
+    raise _refused("not_mapped", f"no storage resource named {name!r}. Mapped to this app: {names}")
 
 
 def _folders(named: list[Mount]) -> str:
@@ -398,7 +409,7 @@ def store(name: str, folder: str | None = None) -> Mount:
     """
     mount = storage(name, folder)
     if mount.kind and mount.kind != "store":
-        raise ToftError(
+        raise _refused("not_a_store",
             f"{name!r} is a {mount.kind}, not a store. A volume is a real filesystem — "
             f"write to toft.storage({name!r}).path directly, with the ordinary file APIs."
         )

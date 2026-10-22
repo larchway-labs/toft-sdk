@@ -48,7 +48,17 @@ def require(name: str) -> str:
     value = os.environ.get(name, "").strip()
     if value:
         return value
-    raise ToftError(_missing(name))
+    raise ToftError(_missing(name), body={"code": _missing_code(name), "retryable": False})
+
+
+def _missing_code(name: str) -> str:
+    """The code :func:`_missing`'s sentence carries: ``job_send_only`` — the
+    platform's own word for the same rule — when a job asked for the app
+    token, ``off_platform`` otherwise. Neither is helped by trying again, and
+    without a code a statusless error reads as retryable."""
+    if name == ENV_APP_TOKEN and os.environ.get(ENV_RUN_ID, "").strip():
+        return "job_send_only"
+    return "off_platform"
 
 
 def _missing(name: str) -> str:

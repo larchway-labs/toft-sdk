@@ -98,6 +98,16 @@ class _RunnerTransport:
             raise ToftError(f"cannot reach Toft at {self._base}: {exc.reason}") from None
 
 
+def _input_refusal_body(status: int) -> dict | None:
+    """The code for the two refusals :func:`_input_refusal` explains. Any other
+    status is left to the status rule: a 503 is worth another try."""
+    if status == 404:
+        return {"code": "input_not_given", "retryable": False}
+    if status in (403, 410):
+        return {"code": "input_expired", "retryable": False}
+    return None
+
+
 def _input_refusal(status: int) -> str:
     """What a failed input read means, in the two cases that are not "it broke".
 
@@ -217,7 +227,8 @@ class Run:
             with urllib.request.urlopen(self.input_uri, timeout=DEFAULT_TIMEOUT) as resp:
                 return resp.read()
         except urllib.error.HTTPError as exc:
-            raise ToftError(_input_refusal(exc.code), status=exc.code) from None
+            raise ToftError(_input_refusal(exc.code), status=exc.code,
+                            body=_input_refusal_body(exc.code)) from None
 
     def read_input_json(self) -> Any:
         raw = self.read_input()
@@ -231,7 +242,8 @@ class Run:
         against it unable to move to isolated mode.
         """
         if not self.output_uri:
-            raise ToftError("this run has no output location")
+            raise ToftError("this run has no output location",
+                            body={"code": "no_output", "retryable": False})
         body = data.encode() if isinstance(data, str) else data
         req = urllib.request.Request(self.output_uri, data=body, method="PUT")
         try:

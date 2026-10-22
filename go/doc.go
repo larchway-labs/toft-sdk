@@ -74,9 +74,11 @@
 // [ViewerFor] is *act as this person* and fails when there is nobody to act for —
 // a silent downgrade would move a run out of somebody's name and into nobody's.
 // [Who] is *who is this*, and answers nil for an anonymous visitor because that is
-// an answer rather than a failure. It fails for one thing only: an app an
-// administrator has not enabled viewer identity on, which is a configuration gap
-// to close and not a runtime state to branch on.
+// an answer rather than a failure. It fails for one thing only: a request
+// carrying a signed-in viewer to an app an administrator has not enabled viewer
+// identity on, which is a configuration gap to close and not a runtime state to
+// branch on. A request with nobody on it (anonymous, or an API key) is nil
+// whatever the setting; App.Can("viewer.identity") reads the setting itself.
 //
 // **A scheduled task's log is the one thing the platform cannot capture for you.**
 // Toft triggers a task by making an HTTP request to a path you published; it

@@ -92,6 +92,7 @@ export class Data {
       throw new ToftError(
         "app data holds one JSON object — an array or a bare value has nowhere to " +
           'grow a field later, so wrap it, e.g. { items: [...] }.',
+        { body: { code: "bad_request", retryable: false } },
       );
     }
     const headers = ifVersion === undefined ? undefined : { "If-Match": `"${ifVersion}"` };

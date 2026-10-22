@@ -170,10 +170,12 @@ func (v *Viewer) Identity(ctx context.Context) (*Identity, error) {
 func ViewerFor(headers http.Header) (*Viewer, error) {
 	blob := findHeader(headers, ActForHeader)
 	if blob == "" {
-		return nil, &Error{Message: "no " + ActForHeader + " header on this request, so there " +
-			"is no viewer to act for. Toft's proxy sets it on every request from a " +
-			"signed-in person; its absence usually means the app was reached outside the " +
-			"gateway — a health check, a direct port, or a local development server. Use " +
+		return nil, &Error{Body: refusal("no_viewer"), Message: "no " + ActForHeader + " header on this request, so there " +
+			"is no viewer to act for. Toft's proxy sets it only for a signed-in browser " +
+			"session, so its absence means the request came with an API key (the gateway " +
+			"authorizes a key but asserts no person to the app — `toft fetch --session` is a " +
+			"signed-in request), or the app was reached outside the gateway — a health " +
+			"check, a direct port, or a local development server. Use " +
 			"toft.Jobs to act as the app itself, deliberately, rather than treating this as " +
 			"the same thing."}
 	}
@@ -197,7 +199,9 @@ func ViewerFor(headers http.Header) (*Viewer, error) {
 // about to start a job in somebody's name should never silently start it in
 // nobody's.
 //
-// A nil identity with a nil error means nobody is there: an anonymous visitor, or
+// A nil identity with a nil error means nobody is there — **including a request
+// made with an API key**, which the gateway authorizes as its owner but asserts
+// to the app as nobody; only a browser session carries a viewer. An anonymous visitor, or
 // somebody whose access was revoked while their page stayed open. **It never
 // means "not allowed to ask"** — that is an error, naming the setting and saying
 // an administrator enables it. An app that would rather never see that error

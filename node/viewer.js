@@ -181,10 +181,13 @@ export function viewer(headers) {
   if (!blob) {
     throw new ToftError(
       `no ${ACT_FOR_HEADER} header on this request, so there is no viewer to act for. ` +
-        `Toft's proxy sets it on every request from a signed-in person; its absence ` +
-        `usually means the app was reached outside the gateway — a health check, a direct ` +
-        `port, or a local development server. Use toft.jobs to act as the app itself, ` +
+        `Toft's proxy sets it only for a signed-in browser session, so its absence means ` +
+        `the request came with an API key (the gateway authorizes a key but asserts no ` +
+        `person to the app — \`toft fetch --session\` is a signed-in request), or the app ` +
+        `was reached outside the gateway — a health check, a direct port, or a local ` +
+        `development server. Use toft.jobs to act as the app itself, ` +
         `deliberately, rather than treating this as the same thing.`,
+      { body: { code: "no_viewer", retryable: false } },
     );
   }
   return new Viewer(blob);

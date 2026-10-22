@@ -136,7 +136,7 @@ export class Mount {
 
   get path() {
     if (!this.mounted) {
-      throw new ToftError(
+      throw refused("not_mounted",
         `${JSON.stringify(this.name)} is not mounted here — on this install the app reaches it ` +
           `through the platform: use list(), upload(), download() or url()`,
       );
@@ -147,6 +147,16 @@ export class Mount {
   /** Whether this mount permits a write at all — every rung above `read`. */
   get writable() {
     return this.access !== "read" && this.access !== "";
+  }
+
+  /**
+   * The same fact under the name the other three SDKs and the skill use —
+   * Python's `read_only`, Go's `ReadOnly()`. Without it `m.readOnly` is
+   * `undefined`, which renders as a blank and reads as falsy: a read-only
+   * mount reported as writable by every app that ported the spelling.
+   */
+  get readOnly() {
+    return !this.writable;
   }
 
   /**
@@ -170,13 +180,13 @@ export class Mount {
     checkRelativeName(targetName);
 
     if (!this.mounted) {
-      throw new ToftError(
+      throw refused("not_mounted",
         `${JSON.stringify(this.name)} is not mounted here, so put() has nowhere to copy to — ` +
           `use upload(), which reaches it through the platform`,
       );
     }
     if (!this.writable) {
-      throw new ToftError(
+      throw refused("insufficient_access",
         `${JSON.stringify(this.name)} is mounted read-only, so this app cannot write to it. ` +
           `An administrator sets the access level where the resource is mapped.`,
       );
@@ -201,11 +211,18 @@ export class Mount {
       (await transport().get(
         this.#route("/api/v1/app/store/{slug}/objects", "", { path: listPath, cursor }),
       )) ?? {};
+    const objects = page.objects ?? [];
+    // Iterable over its objects, as Python's Listing is: `for (const o of
+    // await s.list())` reads the same in both, and `length` is the page's.
     return {
-      objects: page.objects ?? [],
+      objects,
       prefixes: page.prefixes ?? [],
       nextCursor: page.next_cursor ?? "",
       access: page.access ?? "",
+      length: objects.length,
+      [Symbol.iterator]() {
+        return objects[Symbol.iterator]();
+      },
     };
   }
 
@@ -227,7 +244,7 @@ export class Mount {
       await sendSigned(signed, data);
     } catch (err) {
       if (err instanceof ToftError && err.status === 412) {
-        throw new ToftError(
+        throw refused("already_exists",
           `${JSON.stringify(target)} already exists in ${JSON.stringify(this.name)}, and this ` +
             `app's access (${this.access}) creates new objects only`,
           { status: 412 },
@@ -272,7 +289,7 @@ export class Mount {
   // is never a question the platform has to ask back.
   #route(route, name = "", query = {}) {
     if (this.kind && this.kind !== "store") {
-      throw new ToftError(
+      throw refused("not_a_store",
         `${JSON.stringify(this.name)} is a ${this.kind}, which is reached at its path — only ` +
           `an object store is reached over signed URLs`,
       );
@@ -284,6 +301,16 @@ export class Mount {
       .replace("{name}", encodeName(name));
     return `${filled}?${params}`;
   }
+}
+
+/**
+ * A refusal this SDK makes itself, carrying the platform's envelope. None of
+ * these is helped by trying again — a mapping, a name or a level is wrong — and
+ * without a body the status rule would call a statusless error retryable, the
+ * answer for a network failure. So each says so, with a code to branch on.
+ */
+function refused(code, message, options = {}) {
+  return new ToftError(message, { ...options, body: { code, retryable: false } });
 }
 
 function encodeName(name) {
@@ -323,16 +350,16 @@ async function sendSigned(signed, body) {
  * worst case — rather than into the storage it was given.
  */
 function checkRelativeName(name) {
-  if (!name) throw new ToftError("a name is required");
+  if (!name) throw refused("invalid_name", "a name is required");
   if (name.startsWith("/") || name.endsWith("/")) {
-    throw new ToftError(`a name is relative to the mount, got ${JSON.stringify(name)}`);
+    throw refused("invalid_name", `a name is relative to the mount, got ${JSON.stringify(name)}`);
   }
   if (name.includes("\\")) {
-    throw new ToftError(`a name must use forward slashes, got ${JSON.stringify(name)}`);
+    throw refused("invalid_name", `a name must use forward slashes, got ${JSON.stringify(name)}`);
   }
   for (const segment of name.split("/")) {
     if (segment === "" || segment === "." || segment === "..") {
-      throw new ToftError(
+      throw refused("invalid_name",
         `a name must not contain ${JSON.stringify(segment)} segments, got ${JSON.stringify(name)}`,
       );
     }
@@ -375,7 +402,7 @@ export function mounts() {
 export function store(name, options) {
   const mount = storage(name, options);
   if (mount.kind && mount.kind !== "store") {
-    throw new ToftError(
+    throw refused("not_a_store",
       `${JSON.stringify(name)} is a ${mount.kind}, not a store. A volume is a real ` +
         `filesystem — write to toft.storage(${JSON.stringify(name)}).path directly, with the ` +
         `ordinary file APIs.`,
@@ -411,7 +438,7 @@ export function storage(name, { folder } = {}) {
     const exact = named.find((m) => m.folder === folder);
     if (exact) return exact;
     if (named.length) {
-      throw new ToftError(
+      throw refused("not_mapped",
         `${JSON.stringify(name)} is mounted, but not at folder ${JSON.stringify(folder)}. ` +
           `Mounted here: ${describeFolders(named)}.`,
       );
@@ -419,7 +446,7 @@ export function storage(name, { folder } = {}) {
   } else if (named.length === 1) {
     return named[0];
   } else if (named.length > 1) {
-    throw new ToftError(
+    throw refused("ambiguous_mount",
       `${named.length} mounts are named ${JSON.stringify(name)} — ${describeFolders(named)}. ` +
         `Name one: toft.storage(${JSON.stringify(name)}, { folder: ` +
         `${JSON.stringify(named[0].folder)} }).`,
@@ -427,7 +454,7 @@ export function storage(name, { folder } = {}) {
   }
 
   const available = all.map((m) => m.name);
-  throw new ToftError(
+  throw refused("not_mapped",
     available.length
       ? `no storage resource called ${JSON.stringify(name)} is mapped to this app. ` +
         `Mapped here: ${available.join(", ")}.`

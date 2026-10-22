@@ -69,7 +69,7 @@ mounts <- function() {
 #' @export
 storage <- function(name, folder = NULL) {
   if (missing(name) || !nzchar(name)) {
-    stop("storage() needs the name an administrator gave the resource", call. = FALSE)
+    stop(toft_refusal("invalid_name", "storage() needs the name an administrator gave the resource"))
   }
   available <- mounts()
   named <- Filter(function(m) identical(m$name, name), available)
@@ -80,30 +80,30 @@ storage <- function(name, folder = NULL) {
       return(exact[[1]])
     }
     if (length(named) > 0) {
-      stop(sprintf(
+      stop(toft_refusal("not_mapped", sprintf(
         "'%s' is mounted, but not at folder '%s'. Mounted here: %s",
         name, folder, describe_folders(named)
-      ), call. = FALSE)
+      )))
     }
   } else if (length(named) == 1) {
     return(named[[1]])
   } else if (length(named) > 1) {
-    stop(sprintf(
+    stop(toft_refusal("ambiguous_mount", sprintf(
       "%d mounts are named '%s' — %s. Name one: storage('%s', folder = '%s')",
       length(named), name, describe_folders(named),
       name, named[[1]]$folder
-    ), call. = FALSE)
+    )))
   }
 
   if (length(available) == 0) {
-    stop(sprintf(
+    stop(toft_refusal("not_mapped", sprintf(
       paste0("no storage resource named '%s', and this app has none mapped at all — ",
-             "an administrator maps storage on the app's Storage tab"), name), call. = FALSE)
+             "an administrator maps storage on the app's Storage tab"), name)))
   }
-  stop(sprintf(
+  stop(toft_refusal("not_mapped", sprintf(
     "no storage resource named '%s'. Mapped to this app: %s",
     name, paste(sort(vapply(available, function(m) m$name, "")), collapse = ", ")
-  ), call. = FALSE)
+  )))
 }
 
 #' Resolve one store by name
@@ -123,11 +123,11 @@ storage <- function(name, folder = NULL) {
 store <- function(name, folder = NULL) {
   mount <- storage(name, folder)
   if (nzchar(mount$kind) && !identical(mount$kind, "store")) {
-    stop(sprintf(
+    stop(toft_refusal("not_a_store", sprintf(
       paste0("'%s' is a %s, not a store. A volume is a real filesystem — write to ",
              "storage('%s')$path directly, with the ordinary file functions."),
       name, mount$kind, name
-    ), call. = FALSE)
+    )))
   }
   mount
 }
@@ -170,9 +170,9 @@ store_put <- function(mount, source, name = NULL) {
   # "" is the working directory, and copying there writes into the app's own
   # tree: a store that is not mounted is reached through the platform instead.
   if (is.null(mount$path) || !nzchar(mount$path)) {
-    stop(sprintf(paste0("'%s' is not mounted here, so store_put() has nowhere to copy to — ",
+    stop(toft_refusal("not_mounted", sprintf(paste0("'%s' is not mounted here, so store_put() has nowhere to copy to — ",
                         "use store_upload(), which reaches it through the platform"),
-                 mount$name), call. = FALSE)
+                 mount$name)))
   }
   if (missing(source) || !nzchar(source)) {
     stop("store_put() needs the path of a local file to copy", call. = FALSE)
@@ -184,9 +184,9 @@ store_put <- function(mount, source, name = NULL) {
   check_relative_name(target)
 
   if (identical(mount$access, "read")) {
-    stop(sprintf(
+    stop(toft_refusal("insufficient_access", sprintf(
       paste0("'%s' is mounted read-only, so this app cannot write to it. An administrator ",
-             "sets the access level where the resource is mapped."), mount$name), call. = FALSE)
+             "sets the access level where the resource is mapped."), mount$name)))
   }
 
   destination <- file.path(mount$path, target)
@@ -253,8 +253,8 @@ store_upload <- function(mount, source, name = NULL) {
                          query = store_query(mount))
   status <- send_signed(signed, data)
   if (status == 412) {
-    stop(sprintf("'%s' already exists in '%s', and this app's access (%s) creates new objects only",
-                 target, mount$name, mount$access), call. = FALSE)
+    stop(toft_refusal("already_exists", sprintf("'%s' already exists in '%s', and this app's access (%s) creates new objects only",
+                 target, mount$name, mount$access)))
   }
   check_signed_status(status)
   invisible(target)
@@ -320,8 +320,8 @@ store_route <- function(mount, route, name = "") {
     stop("this needs a store, as store() returns it", call. = FALSE)
   }
   if (nzchar(or_empty(mount$kind)) && !identical(mount$kind, "store")) {
-    stop(sprintf(paste0("'%s' is a %s, which is reached at its path — only an object store ",
-                        "is reached over signed URLs"), mount$name, mount$kind), call. = FALSE)
+    stop(toft_refusal("not_a_store", sprintf(paste0("'%s' is a %s, which is reached at its path — only an object store ",
+                        "is reached over signed URLs"), mount$name, mount$kind)))
   }
   route <- sub("{slug}", utils::URLencode(mount$name, reserved = TRUE), route, fixed = TRUE)
   sub("{name}", encode_name(name), route, fixed = TRUE)
@@ -376,17 +376,17 @@ check_signed_status <- function(status) {
 # rather than into the storage it was given.
 check_relative_name <- function(name) {
   if (!nzchar(name)) {
-    stop("a name is required", call. = FALSE)
+    stop(toft_refusal("invalid_name", "a name is required"))
   }
   if (startsWith(name, "/") || endsWith(name, "/")) {
-    stop(sprintf("a name is relative to the mount, got '%s'", name), call. = FALSE)
+    stop(toft_refusal("invalid_name", sprintf("a name is relative to the mount, got '%s'", name)))
   }
   if (grepl("\\", name, fixed = TRUE)) {
-    stop(sprintf("a name must use forward slashes, got '%s'", name), call. = FALSE)
+    stop(toft_refusal("invalid_name", sprintf("a name must use forward slashes, got '%s'", name)))
   }
   for (segment in strsplit(name, "/", fixed = TRUE)[[1]]) {
     if (!nzchar(segment) || identical(segment, ".") || identical(segment, "..")) {
-      stop(sprintf("a name must not contain '%s' segments, got '%s'", segment, name), call. = FALSE)
+      stop(toft_refusal("invalid_name", sprintf("a name must not contain '%s' segments, got '%s'", segment, name)))
     }
   }
   invisible(TRUE)

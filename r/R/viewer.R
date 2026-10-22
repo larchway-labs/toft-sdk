@@ -42,9 +42,11 @@ find_header <- function(headers, name) {
 #' Ask who the current viewer is
 #'
 #' Only works where an administrator switched viewer identity on for this app.
-#' Where it is off the platform answers 204 and this returns NULL; 204 and 403
-#' never collapse into the same answer, so "nobody is signed in" and "this app
-#' may not ask" stay distinguishable.
+#' A request with nobody on it — no act-for header: an API key, a health check,
+#' a visitor who is not signed in — returns NULL without asking, as the other
+#' three SDKs do. Otherwise, where viewer identity is off, the platform refuses
+#' with \code{viewer_identity_disabled} (a \code{toft_error}), so "nobody is
+#' signed in" and "this app may not ask" stay distinguishable.
 #'
 #' @param request_headers The incoming request's headers, as a named list or a
 #'   named character vector — a Shiny app reads these from
@@ -60,12 +62,14 @@ viewer <- function(request_headers = NULL) {
   # everybody and an app using it showed its signed-out state to signed-in
   # people. Silent, and indistinguishable from viewer identity being switched
   # off — which is the answer it is supposed to be able to tell apart.
-  headers <- NULL
   forwarded <- find_header(request_headers, ACT_FOR_HEADER)
-  if (nzchar(forwarded)) {
-    headers <- list()
-    headers[[ACT_FOR_HEADER]] <- forwarded
+  if (!nzchar(forwarded)) {
+    # Nobody to name, and asking would only turn that into the setting's 403
+    # on an app without viewer identity — a 500 for a signed-out page.
+    return(NULL)
   }
+  headers <- list()
+  headers[[ACT_FOR_HEADER]] <- forwarded
   toft_request("GET", "/api/v1/app/viewer", extra_headers = headers)
 }
 
@@ -240,9 +244,12 @@ caller_role <- function(request_headers) {
 #' @return TRUE or FALSE.
 #' @export
 caller_can <- function(request_headers, at_least = ROLE_VIEWER) {
-  mine <- PERSON_RANK[[caller_role(request_headers)]]
-  want <- PERSON_RANK[[as.character(at_least)]]
-  if (is.null(mine) || is.null(want)) {
+  # Single brackets: `[[` on a named vector stops with "subscript out of bounds"
+  # for a name it lacks, which turned an unknown role into a crash rather than
+  # the FALSE every other SDK answers.
+  mine <- unname(PERSON_RANK[as.character(caller_role(request_headers))])
+  want <- unname(PERSON_RANK[as.character(at_least)])
+  if (length(mine) != 1L || length(want) != 1L || is.na(mine) || is.na(want)) {
     return(FALSE)
   }
   mine >= want

@@ -104,7 +104,7 @@ func (m Mount) Upload(ctx context.Context, source, name string) (string, error) 
 	if _, err := sendSigned(ctx, signed, data); err != nil {
 		var e *Error
 		if errors.As(err, &e) && e.Status == http.StatusPreconditionFailed {
-			return "", &Error{Status: e.Status, Message: fmt.Sprintf(
+			return "", &Error{Body: refusal("already_exists"), Status: e.Status, Message: fmt.Sprintf(
 				"%q already exists in %q, and this app's access (%s) creates new objects only",
 				target, m.Name, m.Access)}
 		}
@@ -196,7 +196,7 @@ func (m Mount) mint(ctx context.Context, method, route string, body any, into *s
 // mapped twice is never a question the platform has to ask back.
 func (m Mount) storeRoute(route, name string, query map[string]string) (string, error) {
 	if m.Kind != "" && m.Kind != "store" {
-		return "", &Error{Message: fmt.Sprintf(
+		return "", &Error{Body: refusal("not_a_store"), Message: fmt.Sprintf(
 			"%q is a %s, which is reached at its path — only an object store is reached "+
 				"over signed URLs", m.Name, m.Kind)}
 	}

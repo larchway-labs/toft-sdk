@@ -240,7 +240,7 @@ type EmailMessage struct {
 func (NotifyClient) Email(ctx context.Context, message EmailMessage) (Send, error) {
 	recipients := addresses(message.To)
 	if len(recipients) == 0 {
-		return Send{}, &Error{Message: "email needs at least one recipient in To"}
+		return Send{}, &Error{Body: refusal("bad_request"), Message: "email needs at least one recipient in To"}
 	}
 	if err := requireText(message.Subject, "email subject"); err != nil {
 		return Send{}, err
@@ -299,7 +299,7 @@ func (NotifyClient) Email(ctx context.Context, message EmailMessage) (Send, erro
 // content it wrote, tells it nothing it did not know.
 func (NotifyClient) Status(ctx context.Context, sendID string) (Send, error) {
 	if sendID == "" {
-		return Send{}, &Error{Message: "Status needs the id of a send"}
+		return Send{}, &Error{Body: refusal("bad_request"), Message: "Status needs the id of a send"}
 	}
 	t, err := client()
 	if err != nil {
@@ -314,7 +314,7 @@ func (NotifyClient) Status(ctx context.Context, sendID string) (Send, error) {
 
 func requireText(value, what string) error {
 	if strings.TrimSpace(value) == "" {
-		return &Error{Message: fmt.Sprintf("%s needs some text", what)}
+		return &Error{Body: refusal("bad_request"), Message: fmt.Sprintf("%s needs some text", what)}
 	}
 	return nil
 }

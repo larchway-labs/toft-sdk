@@ -46,7 +46,12 @@ require_env <- function(name) {
   if (nzchar(value)) {
     return(value)
   }
-  stop(missing_env(name), call. = FALSE)
+  code <- if (identical(name, ENV_APP_TOKEN) && nzchar(trimws(Sys.getenv(ENV_RUN_ID, "")))) {
+    "job_send_only"
+  } else {
+    "off_platform"
+  }
+  stop(toft_refusal(code, missing_env(name)))
 }
 
 # missing_env is why the variable is absent, in the two cases that differ.

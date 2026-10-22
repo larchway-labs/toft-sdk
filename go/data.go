@@ -139,7 +139,7 @@ func (DataClient) write(ctx context.Context, document map[string]any, ifVersion 
 	// map here would be serialized as null and quietly wipe the app's settings,
 	// which is a wrong request rather than a refused one.
 	if document == nil {
-		return Document{}, &Error{Message: "app data holds one JSON object — pass an " +
+		return Document{}, &Error{Body: refusal("bad_request"), Message: "app data holds one JSON object — pass an " +
 			"empty map to store an empty document, or call Clear to put the app back to " +
 			"never having one"}
 	}

@@ -115,7 +115,8 @@ class Data:
         if not isinstance(document, dict):
             raise ToftError(
                 "app data holds one JSON object — a list or a bare value has nowhere "
-                'to grow a field later, so wrap it, e.g. {"items": [...]}.'
+                'to grow a field later, so wrap it, e.g. {"items": [...]}.',
+                body={"code": "bad_request", "retryable": False},
             )
         headers = {} if if_version is None else {"If-Match": f'"{if_version}"'}
         raw = _typed(lambda: transport().put_json("/api/v1/app/data", document, headers))

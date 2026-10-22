@@ -362,7 +362,7 @@ class Notify:
         """
         recipients = _addresses(to, "to")
         if not recipients:
-            raise ToftError("email needs at least one recipient in 'to'")
+            raise ToftError("email needs at least one recipient in 'to'", body={"code": "bad_request", "retryable": False})
         subject = _require_text(subject, "email subject")
         text = _require_text(text, "email text")
 
@@ -402,14 +402,14 @@ class Notify:
         """
         send_id = send.id if isinstance(send, Send) else str(send)
         if not send_id:
-            raise ToftError("status() needs the id of a send")
+            raise ToftError("status() needs the id of a send", body={"code": "bad_request", "retryable": False})
         raw = transport().get(f"{SENDS_PATH}/{send_id}")
         return Send.from_raw(raw)
 
 
 def _require_text(value: str, what: str) -> str:
     if not isinstance(value, str) or not value.strip():
-        raise ToftError(f"{what} needs some text")
+        raise ToftError(f"{what} needs some text", body={"code": "bad_request", "retryable": False})
     return value
 
 
@@ -421,7 +421,7 @@ def _addresses(value: str | Sequence[str], field_name: str) -> list[str]:
         items = list(value)
     out = [str(v).strip() for v in items if str(v).strip()]
     if items and not out:
-        raise ToftError(f"'{field_name}' held only blank addresses")
+        raise ToftError(f"'{field_name}' held only blank addresses", body={"code": "bad_request", "retryable": False})
     return out
 
 

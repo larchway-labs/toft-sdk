@@ -126,7 +126,7 @@ func NewSessionID() (string, error) {
 // hostile value cannot traverse outside the scratch root.
 func SessionScratchDir(sessionID string, parts ...string) (string, error) {
 	if sessionID == "" {
-		return "", &Error{Message: "SessionScratchDir needs a non-empty session id — an " +
+		return "", &Error{Body: refusal("bad_request"), Message: "SessionScratchDir needs a non-empty session id — an " +
 			"empty one would silently collapse every session into the same directory"}
 	}
 	sum := sha256.Sum256([]byte(sessionID))

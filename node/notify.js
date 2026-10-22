@@ -171,7 +171,7 @@ function toBytes(value) {
 
 function requireText(value, what) {
   if (typeof value !== "string" || !value.trim()) {
-    throw new ToftError(`${what} needs some text`);
+    throw new ToftError(`${what} needs some text`, { body: { code: "bad_request", retryable: false } });
   }
   return value;
 }
@@ -181,7 +181,7 @@ function addresses(value, field) {
   const items = typeof value === "string" ? [value] : Array.from(value ?? []);
   const out = items.map((v) => String(v).trim()).filter(Boolean);
   if (items.length && !out.length) {
-    throw new ToftError(`'${field}' held only blank addresses`);
+    throw new ToftError(`'${field}' held only blank addresses`, { body: { code: "bad_request", retryable: false } });
   }
   return out;
 }
@@ -359,7 +359,7 @@ export class Notify {
   async email({ to, subject, text, html, cc, bcc, attachments, idempotencyKey } = {}) {
     const recipients = addresses(to, "to");
     if (!recipients.length) {
-      throw new ToftError("email needs at least one recipient in 'to'");
+      throw new ToftError("email needs at least one recipient in 'to'", { body: { code: "bad_request", retryable: false } });
     }
     const body = {
       to: recipients,
@@ -397,7 +397,7 @@ export class Notify {
    */
   async status(send) {
     const id = send instanceof Send ? send.id : String(send ?? "");
-    if (!id) throw new ToftError("status() needs the id of a send");
+    if (!id) throw new ToftError("status() needs the id of a send", { body: { code: "bad_request", retryable: false } });
     return new Send(await transport().get(`${SENDS_PATH}/${id}`));
   }
 }
