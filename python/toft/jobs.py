@@ -134,6 +134,16 @@ def _parse_time(raw: Any) -> datetime.datetime | None:
     return value
 
 
+def _backoff(exc: ToftError, poll_interval: float, deadline: float | None) -> float:
+    """How long a polling loop sleeps after a rate_limited refusal: what
+    Retry-After asked, else one poll interval — never past the wait's own
+    deadline."""
+    pause = exc.retry_after if exc.retry_after is not None else poll_interval
+    if deadline is not None:
+        pause = min(pause, max(deadline - time.monotonic(), 0.0))
+    return pause
+
+
 def request_deadline(headers: Any) -> datetime.datetime | None:
     """The cut-off of the request these headers came in on, or None.
 
@@ -312,7 +322,22 @@ class JobRun:
         deadline = None if timeout is None else time.monotonic() + timeout
         current = self
         while True:
-            current = current.refresh()
+            try:
+                current = current.refresh()
+            except ToftError as exc:
+                # A poll the app's own rate limit refused is not the run
+                # failing: wait out Retry-After and read again. Every other
+                # app call on the same limiter counts too, so a busy app hits
+                # it mid-wait, and raising there ended a wait on a healthy run.
+                if exc.code != "rate_limited":
+                    raise
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise WaitTimeout(
+                        f"run {self.id} was still {current.status} after {timeout}s",
+                        body={"code": "wait_timeout", "retryable": True},
+                    ) from exc
+                time.sleep(_backoff(exc, poll_interval, deadline))
+                continue
             if current.done:
                 return current
             if deadline is not None and time.monotonic() >= deadline:
@@ -383,10 +408,18 @@ class JobRun:
         """Yield log lines until the run reaches a terminal status."""
         seq = 0
         while True:
-            for line in self.logs(after_seq=seq):
+            try:
+                lines = self.logs(after_seq=seq)
+                done = self.refresh().done
+            except ToftError as exc:
+                if exc.code != "rate_limited":
+                    raise
+                time.sleep(_backoff(exc, poll_interval, None))
+                continue
+            for line in lines:
                 seq = max(seq, int(line.get("seq") or seq))
                 yield line
-            if self.refresh().done:
+            if done:
                 # One last read: lines can land between the poll and the status
                 # check, and losing the end of a failing job's output loses the
                 # part that explains it.
@@ -434,8 +467,8 @@ class Jobs:
 
         ``params`` are checked against the job's ``[jobs.<name>.params]`` —
         a missing, mistyped or out-of-choice one is refused here
-        (``param_required``, ``param_type``, ``param_choice``), not an hour into
-        the run. They are recorded and shown, so they must not carry secrets.
+        (``param_required``, ``param_type``, ``param_choice``, ``param_unknown``),
+        not an hour into the run. They are recorded and shown, so they must not carry secrets.
 
         ``idempotency_key`` overrides the derived one (and holds for 24 hours
         rather than a minute). The derivation is already right for a framework

@@ -382,7 +382,19 @@ job_wait <- function(run, timeout = NULL, request = NULL, poll = WAIT_POLL_SECON
   started <- Sys.time()
   current <- run
   repeat {
-    current <- job_refresh(current)
+    # A read the app's own rate limit refused is not the run failing: wait out
+    # Retry-After and read again. Every other app call spends the same
+    # limiter, so a busy app hits it mid-wait.
+    pause <- NULL
+    current <- tryCatch(job_refresh(current), toft_error = function(e) {
+      if (!identical(e$code, "rate_limited")) stop(e)
+      pause <<- if (is.null(e$retry_after)) poll else e$retry_after
+      current
+    })
+    if (!is.null(pause)) {
+      Sys.sleep(pause)
+      next
+    }
     if (!is.null(current$status) && !current$status %in% OPEN_RUN_STATUSES) {
       return(current)
     }

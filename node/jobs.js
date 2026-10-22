@@ -83,6 +83,14 @@ export const TERMINAL_STATUSES = new Set([
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// How long a polling loop sleeps after a rate_limited refusal: what
+// Retry-After asked, else one poll interval — never past the wait's deadline.
+function backoffMs(err, pollIntervalMs, deadline) {
+  let pause = err.retryAfter !== undefined ? err.retryAfter * 1000 : pollIntervalMs;
+  if (deadline !== undefined) pause = Math.min(pause, Math.max(deadline - Date.now(), 0));
+  return pause;
+}
+
 /**
  * The cut-off of the request these headers came in on, as a Date, or null.
  *
@@ -219,7 +227,22 @@ export class JobRun {
     const deadline = timeoutMs === undefined ? undefined : Date.now() + timeoutMs;
     let current = this;
     for (;;) {
-      current = await current.refresh();
+      try {
+        current = await current.refresh();
+      } catch (err) {
+        // A poll the app's own rate limit refused is not the run failing:
+        // wait out Retry-After and read again. Every other app call spends the
+        // same limiter, so a busy app hits it mid-wait.
+        if (err?.code !== "rate_limited") throw err;
+        if (deadline !== undefined && Date.now() >= deadline) {
+          throw new ToftError(
+            `run ${this.id} was still ${current.status} after ${timeoutMs}ms`,
+            { body: { code: "wait_timeout", retryable: true } },
+          );
+        }
+        await sleep(backoffMs(err, pollIntervalMs, deadline));
+        continue;
+      }
       if (current.done) return current;
       if (deadline !== undefined && Date.now() >= deadline) {
         // Named, so a caller can branch on it: the run is still going, and
@@ -292,11 +315,20 @@ export class JobRun {
   async *tail({ pollIntervalMs = 2000 } = {}) {
     let seq = 0;
     for (;;) {
-      for (const line of await this.logs(seq)) {
+      let lines, done;
+      try {
+        lines = await this.logs(seq);
+        done = (await this.refresh()).done;
+      } catch (err) {
+        if (err?.code !== "rate_limited") throw err;
+        await sleep(backoffMs(err, pollIntervalMs));
+        continue;
+      }
+      for (const line of lines) {
         seq = Math.max(seq, line.seq ?? seq);
         yield line;
       }
-      if ((await this.refresh()).done) {
+      if (done) {
         // One last read: lines can land between the poll and the status check,
         // and losing the end of a failing job's output loses the part that
         // explains it.
@@ -360,8 +392,8 @@ export class Jobs {
    * Queue a run and resolve with its handle immediately.
    *
    * `params` are checked against the job's `[jobs.<name>.params]` — a missing,
-   * mistyped or out-of-choice one is refused here (`param_required`,
-   * `param_type`, `param_choice`), not an hour into the run. They are recorded
+   * mistyped, out-of-choice or undeclared one is refused here (`param_required`,
+   * `param_type`, `param_choice`, `param_unknown`), not an hour into the run. They are recorded
    * and shown, so they must not carry secrets.
    *
    * `idempotencyKey` overrides the derived one (and holds for 24 hours rather

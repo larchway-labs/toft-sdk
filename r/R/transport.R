@@ -32,6 +32,9 @@ api_url <- function() {
 # job's callbacks to /api/v1/runner/*, made with the run token. `parse = FALSE`
 # returns the response itself, redirects unfollowed, for the one route that
 # answers with a presigned URL the app's token must not be sent to.
+# Seconds the built-in retry waits when a refusal names no Retry-After.
+DEFAULT_RETRY_AFTER <- 2
+
 toft_request <- function(method, path, body = NULL, query = NULL, extra_headers = NULL,
                          token = NULL, parse = TRUE) {
   if (is.null(token)) {
@@ -75,7 +78,23 @@ toft_request <- function(method, path, body = NULL, query = NULL, extra_headers 
   Encoding(text) <- "UTF-8"
 
   if (resp$status_code >= 400) {
-    stop(toft_error(method, path, resp, text))
+    err <- toft_error(method, path, resp, text)
+    # The one built-in retry the other three SDKs make: a request that never
+    # reached a handler — the rate limiter, a gateway — is tried once more
+    # after Retry-After (else two seconds). Without it every R call that met
+    # the limiter failed outright, and a page polling a run kept the bucket
+    # empty for as long as it polled.
+    if (isTRUE(err$retryable) && (err$status == 429 || err$status >= 500)) {
+      Sys.sleep(if (is.null(err$retry_after)) DEFAULT_RETRY_AFTER else err$retry_after)
+      resp <- curl::curl_fetch_memory(url, handle = handle)
+      text <- rawToChar(resp$content)
+      Encoding(text) <- "UTF-8"
+      if (resp$status_code >= 400) {
+        stop(toft_error(method, path, resp, text))
+      }
+    } else {
+      stop(err)
+    }
   }
   if (!parse) {
     return(resp)

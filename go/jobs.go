@@ -249,7 +249,19 @@ func (r JobRun) Wait(ctx context.Context, opts WaitOptions) (JobRun, error) {
 			if ctx.Err() != nil {
 				return current, cutShort()
 			}
-			return current, err
+			// A poll the app's own rate limit refused is not the run failing:
+			// wait out Retry-After and read again. Every other app call spends
+			// the same limiter, so a busy app hits it mid-wait.
+			pause, limited := rateLimitPause(err, every)
+			if !limited {
+				return current, err
+			}
+			select {
+			case <-ctx.Done():
+				return current, cutShort()
+			case <-time.After(pause):
+			}
+			continue
 		}
 		current = refreshed
 		if current.Done() {
@@ -261,6 +273,20 @@ func (r JobRun) Wait(ctx context.Context, opts WaitOptions) (JobRun, error) {
 		case <-time.After(every):
 		}
 	}
+}
+
+// rateLimitPause reports whether err is the app's rate limit refusing a poll,
+// and how long to wait before the next one: what Retry-After asked, else one
+// poll interval.
+func rateLimitPause(err error, every time.Duration) (time.Duration, bool) {
+	var e *Error
+	if !errors.As(err, &e) || e.Code() != "rate_limited" {
+		return 0, false
+	}
+	if e.RetryAfter > 0 {
+		return e.RetryAfter, true
+	}
+	return every, true
 }
 
 // wouldOutliveRequest is the refusal for a wait the gateway would cut short.
@@ -373,11 +399,20 @@ func (r JobRun) Tail(ctx context.Context, visit func(LogLine) bool) error {
 		return true, nil
 	}
 	for {
-		if keep, err := drain(); err != nil || !keep {
-			return err
+		keep, err := drain()
+		var current JobRun
+		if err == nil && keep {
+			current, err = r.Refresh(ctx)
 		}
-		current, err := r.Refresh(ctx)
-		if err != nil {
+		if pause, limited := rateLimitPause(err, pollInterval); limited {
+			select {
+			case <-ctx.Done():
+				return &Error{Message: ctx.Err().Error(), Wrapped: ctx.Err()}
+			case <-time.After(pause):
+			}
+			continue
+		}
+		if err != nil || !keep {
 			return err
 		}
 		if current.Done() {
