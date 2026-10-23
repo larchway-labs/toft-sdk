@@ -249,10 +249,9 @@ caller_role <- function(request_headers) {
 #' \code{anonymous} included — an unverifiable caller is not "at least a
 #' stranger", it is nobody this app can say anything about.
 #'
-#' A rung does not mean a human. An app key may be minted carrying
-#' \code{"viewer"} or \code{"editor"}, by an owner or editor of this app who
-#' chose to describe their machine client that way, and such a key satisfies
-#' \code{caller_can} exactly as a person with the same word does. That is the
+#' A rung does not mean a human. A machine client is an account granted on
+#' this app, and it satisfies \code{caller_can} exactly as a person with the
+#' same grant does. That is the
 #' point of the word — the caller may do what it says — and it is why nothing
 #' here answers "is a human in front of me".
 #'

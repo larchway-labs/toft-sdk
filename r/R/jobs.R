@@ -316,7 +316,15 @@ job_list <- function(job = NULL, status = NULL, limit = 50) {
 #'   is signed in.
 #' @export
 job_mine <- function(request, job = NULL, limit = 20) {
-  viewer <- if (inherits(request, "toft_viewer_jobs")) request else viewer_jobs(request)
+  # viewer_jobs()'s own refusal hints at job_start(), the next step for a start
+  # with nobody signed in; for a read the next step is the app's own list.
+  viewer <- if (inherits(request, "toft_viewer_jobs")) request else tryCatch(
+    viewer_jobs(request),
+    toft_error = function(e) {
+      if (!identical(e$code, "no_viewer")) stop(e)
+      stop(toft_refusal("no_viewer", conditionMessage(e),
+                        hint = "use job_list(...) for the app's own runs"))
+    })
   list_runs(job = job, limit = limit, scope = "viewer", viewer = viewer)
 }
 
@@ -376,7 +384,9 @@ job_wait <- function(run, timeout = NULL, request = NULL, poll = WAIT_POLL_SECON
         "waiting on run %s with %s would outlive the request this code is serving, ",
         "which the gateway cuts off in %.0fs - the caller would get a bare 504. ",
         "Respond with the run and let the browser follow it."), run$id, asked, max(left, 0)),
-        hint = "return(job_respond(run))"))
+        # Shiny's ui() cannot return a response, so the hint names its spelling
+        # too: a link to the run's own status page.
+        hint = "return(job_respond(run)) - in Shiny, show a link to run$status_url"))
     }
   }
   started <- Sys.time()

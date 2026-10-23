@@ -49,6 +49,27 @@ mounts <- function() {
   })
 }
 
+#' Where a mount is, or a refusal when it is not mounted
+#'
+#' A mount is a list, so `m$path` cannot refuse: on an install where a store is
+#' reached by signed URLs alone it is `""`, and `file.path(m$path, "x.csv")` is
+#' then `/x.csv` — a path at the root of the filesystem, which nothing refuses
+#' until a write fails or, worse, succeeds somewhere unintended. This is the
+#' spelling that refuses, `not_mounted`, naming the calls that do reach it, as
+#' `.path` does in Python and Node.
+#'
+#' @param mount A mount, as `mounts()`, `storage()` or `store()` return it.
+#' @return The mount's path.
+#' @export
+mount_path <- function(mount) {
+  if (is.null(mount$path) || !nzchar(mount$path)) {
+    stop(toft_refusal("not_mounted", sprintf(paste0(
+      "'%s' is not mounted here — on this install the app reaches it through the platform: ",
+      "use store_list(), store_upload(), store_download() or store_url()"), mount$name)))
+  }
+  mount$path
+}
+
 #' Resolve one resource by name, and — where it is mapped twice — by folder
 #'
 #' **A name is not always one mount.** A mapping's identity is
@@ -102,7 +123,8 @@ storage <- function(name, folder = NULL) {
   }
   stop(toft_refusal("not_mapped", sprintf(
     "no storage resource named '%s'. Mapped to this app: %s",
-    name, paste(sort(vapply(available, function(m) m$name, "")), collapse = ", ")
+    # Each name once: a resource mapped at two folders is one resource.
+    name, paste(sort(unique(vapply(available, function(m) m$name, ""))), collapse = ", ")
   )))
 }
 

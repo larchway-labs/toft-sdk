@@ -74,7 +74,7 @@ export const ROLE_OWNER = "owner";
  * button.
  */
 export const ROLE_SYSTEM = "system";
-/** The app's own credential — an app key at the gateway, an app-started job's callback. */
+/** The app acting as itself — an app-started job's callback. */
 export const ROLE_APP = "app";
 
 const ROLE_VERSION = "v1";
@@ -113,10 +113,9 @@ export class Caller {
    * caller is not "at least a stranger", it is nobody this app can say anything
    * about.
    *
-   * **A rung does not mean a human.** An app key may be minted carrying
-   * `viewer` or `editor`, by an owner or editor of this app who chose to
-   * describe their machine client that way, and such a key satisfies `atLeast`
-   * exactly as a person with the same word does. That is the point of the word
+   * **A rung does not mean a human.** A machine client is an account granted
+   * on this app, and it satisfies `atLeast` exactly as a person with the same
+   * grant does. That is the point of the word
    * — the caller may do what it says — and it is why nothing here answers "is a
    * human in front of me". See `isPerson`.
    */
@@ -132,9 +131,8 @@ export class Caller {
    *
    * **It does not mean a human, and it never checked for one.** This has always
    * been membership of the ladder and nothing more; what changed is that a rung
-   * can now be reached by something other than a person, because an app key may
-   * be minted carrying `viewer` or `editor`. Before that the two coincided by
-   * accident: no machine credential could reach the ladder at all.
+   * is reached by something other than a person: a machine client is an
+   * account granted on this app, standing on the ladder like anyone.
    *
    * **This platform cannot tell you a human is in front of you.** Nothing here
    * can, and nothing here pretends to — the honest question an app can ask is

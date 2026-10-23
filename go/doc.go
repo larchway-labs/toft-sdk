@@ -69,8 +69,11 @@
 // run's live status page for a browser. The gateway cuts every request at a
 // deadline it puts on the request, so [JobRun.Wait] inside one — with no
 // timeout, or one past that deadline — is refused at once with
-// would_outlive_request, whose hint is the Respond line to paste. Waiting
-// belongs to a script, a CLI, or a job.
+// would_outlive_request, whose hint is the Respond line to paste. Go has no
+// current request to find, so the guard sees the deadline only when it is
+// given one: a run started through [ViewerFor], or WaitOptions{Request: r}. A
+// Wait on a run from [Jobs].Start with neither waits until the gateway's 504.
+// Waiting belongs to a script, a CLI, or a job.
 //
 // **Params are the only input.** A job's input is the params toft.toml
 // declares, validated and typed at start; anything larger goes into the app's

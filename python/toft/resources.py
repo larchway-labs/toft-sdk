@@ -383,7 +383,8 @@ def storage(name: str, folder: str | None = None) -> Mount:
             f"no storage resource named {name!r}, and this app has none mapped at "
             f"all — an administrator maps storage on the app's Storage tab"
         )
-    names = ", ".join(sorted(m.name for m in available)) or "(none)"
+    # Each name once: a resource mapped at two folders is one resource.
+    names = ", ".join(sorted({m.name for m in available})) or "(none)"
     raise _refused("not_mapped", f"no storage resource named {name!r}. Mapped to this app: {names}")
 
 

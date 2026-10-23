@@ -195,7 +195,10 @@ type WaitOptions struct {
 // Wait blocks until the run ends and returns it in its final state.
 //
 // For scripts, one-shot tools and jobs. **Inside a request it is refused at
-// once** — code would_outlive_request, not retryable — when it has no Timeout,
+// once** — code would_outlive_request, not retryable — once it knows the
+// request: a run started through [ViewerFor] carries its deadline, and
+// WaitOptions{Request: r} or {Header: h} names one. With neither it cannot tell
+// a handler from a script. It is refused when it has no Timeout,
 // or a Timeout past what is left of the request: the gateway would cut the
 // connection at its deadline and the browser would get a bare 504. The fix is
 // in the refusal's hint: respond with [JobsClient.Respond] and let the browser

@@ -173,7 +173,7 @@ func ViewerFor(headers http.Header) (*Viewer, error) {
 	blob := findHeader(headers, ActForHeader)
 	if blob == "" {
 		return nil, &Error{Body: map[string]any{"code": "no_viewer", "retryable": false,
-			"hint": "use toft.Jobs.Start(...) to start it as the app"}, Message: "no " + ActForHeader + " header on this request, so there " +
+			"hint": "use toft.Jobs.Start(...) to start it as the app, or toft.Jobs.List(...) for its runs"}, Message: "no " + ActForHeader + " header on this request, so there " +
 			"is no viewer to act for. Toft's proxy sets it only for a signed-in browser " +
 			"session, so its absence means the request came with an API key (the gateway " +
 			"authorizes a key but asserts no person to the app — `toft fetch --session` is a " +

@@ -75,8 +75,7 @@ ROLE_OWNER = "owner"
 #: A *manual* firing of the same schedule carries the role of whoever pressed the
 #: button.
 ROLE_SYSTEM = "system"
-#: The app's own credential — an app key at the gateway, an app-started job's
-#: callback.
+#: The app acting as itself — an app-started job's callback.
 ROLE_APP = "app"
 
 _ROLE_VERSION = "v1"
@@ -114,10 +113,9 @@ class Caller:
         unverifiable caller is not "at least a stranger", it is nobody this app
         can say anything about.
 
-        **A rung does not mean a human.** An app key may be minted carrying
-        ``viewer`` or ``editor``, by an owner or editor of this app who chose to
-        describe their machine client that way, and such a key satisfies
-        ``at_least`` exactly as a person with the same word does. That is the
+        **A rung does not mean a human.** A machine client is an account
+        granted on this app, and it satisfies ``at_least`` exactly as a person
+        with the same grant does. That is the
         point of the word — the caller may do what it says — and it is why
         nothing here answers "is a human in front of me". See :attr:`is_person`.
         """
@@ -132,10 +130,9 @@ class Caller:
 
         **It does not mean a human, and it never checked for one.** This has
         always been membership of the ladder and nothing more; what changed is
-        that a rung can now be reached by something other than a person, because
-        an app key may be minted carrying ``viewer`` or ``editor``. Before that
-        the two coincided by accident: no machine credential could reach the
-        ladder at all.
+        that a rung is reached by something other than a person: a machine
+        client is an account granted on this app, standing on the ladder like
+        anyone.
 
         **This platform cannot tell you a human is in front of you.** Nothing
         here can, and nothing here pretends to — the honest question an app can
@@ -157,8 +154,8 @@ class Caller:
         """Above anonymous on the person ladder. False for an anonymous visitor.
 
         Like :attr:`is_person`, a fact about the ladder rather than about a
-        human: an app key minted with ``viewer`` or ``editor`` is True here, and
-        no account was signed into to produce it.
+        human: a machine client's account granted ``viewer`` or ``editor`` is
+        True here.
 
         This is the one bit a public app gains that it did not have: it can tell
         a reader with a rung from a stranger. It names nobody — but a log line per

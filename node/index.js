@@ -44,7 +44,8 @@
  * of the app's own process is the point rather than a side effect. It never
  * blocks on the work, and a request handler answers with
  * `toft.jobs.respond(run, req)` rather than waiting: `wait()` is for scripts
- * and jobs, and rejects inside a request it would outlive. Params are the only
+ * and jobs, and rejects inside a request it would outlive once it is shown
+ * that request (`toft.viewer(headers)`, or `wait({ headers })`). Params are the only
  * input, and a run is never retried behind anyone's back. See jobs.js.
  *
  * **Two objects, and which one you call is the decision.** `toft.jobs` is the app

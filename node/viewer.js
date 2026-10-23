@@ -198,7 +198,7 @@ export function viewer(headers) {
         body: {
           code: "no_viewer",
           retryable: false,
-          hint: "use toft.jobs.start(...) to start it as the app",
+          hint: "use toft.jobs.start(...) to start it as the app, or toft.jobs.list(...) for its runs",
         },
       },
     );

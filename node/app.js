@@ -472,7 +472,8 @@ export function storage(name, { folder } = {}) {
     );
   }
 
-  const available = all.map((m) => m.name);
+  // Each name once: a resource mapped at two folders is one resource.
+  const available = [...new Set(all.map((m) => m.name))];
   throw refused("not_mapped",
     available.length
       ? `no storage resource called ${JSON.stringify(name)} is mapped to this app. ` +

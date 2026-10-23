@@ -222,9 +222,14 @@ func storageIn(name string, folder *string) (Mount, error) {
 			"no storage resource named %q, and this app has none mapped at all — an "+
 				"administrator maps storage on the app's Storage tab", name)}
 	}
+	// Each name once: a resource mapped at two folders is one resource.
 	names := make([]string, 0, len(available))
+	seen := map[string]bool{}
 	for _, mount := range available {
-		names = append(names, mount.Name)
+		if !seen[mount.Name] {
+			seen[mount.Name] = true
+			names = append(names, mount.Name)
+		}
 	}
 	sort.Strings(names)
 	return Mount{}, &Error{Body: refusal("not_mapped"), Message: fmt.Sprintf(

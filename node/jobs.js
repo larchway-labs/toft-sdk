@@ -36,7 +36,9 @@
  * request two ways, both explicit: the headers given to `toft.viewer()` (every
  * run started or read through that viewer carries them), and a `headers` option
  * to `wait`. A WebSocket upgrade's headers carry no deadline, because its
- * deadline is not the socket's.
+ * deadline is not the socket's. **There is no third way**: Node has no current
+ * request to find, so a run from `toft.jobs.start()` waited on with no
+ * `headers` cannot tell a handler from a script, and waits to the 504.
  *
  * Which object you call says whether a run is attributed to a person —
  * `toft.jobs` is the app acting as itself, `toft.viewer(headers).jobs` the app
