@@ -122,7 +122,15 @@ func (m Mount) Download(ctx context.Context, name string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return sendSigned(ctx, signed, nil)
+	data, err := sendSigned(ctx, signed, nil)
+	var e *Error
+	if errors.As(err, &e) && e.Status == http.StatusNotFound {
+		// The URL is signed for any name; the store is what answers that
+		// nothing is there — the first night of every nightly job.
+		return nil, &Error{Body: refusal("not_found"), Status: e.Status, Message: fmt.Sprintf(
+			"%q is not in %q — nothing has been put there under that name yet", name, m.Name)}
+	}
+	return data, err
 }
 
 // URL is a signed GET for one object, to hand to a browser. It lives fifteen

@@ -294,6 +294,14 @@ store_upload <- function(mount, source, name = NULL) {
 store_download <- function(mount, name, dest = NULL) {
   signed <- sign_get(mount, name, FALSE)
   got <- send_signed(signed, NULL, keep = TRUE)
+  if (got$status == 404) {
+    # The URL is signed for any name; the store is what answers that nothing
+    # is there — the first night of every nightly job.
+    e <- toft_refusal("not_found", sprintf("'%s' is not in '%s' — nothing has been put there under that name yet",
+                                           name, mount$name))
+    e$status <- 404L
+    stop(e)
+  }
   check_signed_status(got$status)
   if (is.null(dest)) {
     return(got$content)
@@ -388,7 +396,13 @@ send_signed <- function(signed, data, keep = FALSE) {
 
 check_signed_status <- function(status) {
   if (status >= 400) {
-    stop(sprintf("the object store refused the request (%d)", status), call. = FALSE)
+    # A toft_error like every other refusal, so tryCatch(toft_error = ) sees
+    # it. No body to say otherwise, so the status decides: a throttle or a
+    # server error may pass, anything else is the request itself.
+    e <- toft_refusal("", sprintf("the object store refused the request (%d)", status),
+                      retryable = status == 429 || status >= 500)
+    e$status <- as.integer(status)
+    stop(e)
   }
   invisible(TRUE)
 }

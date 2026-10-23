@@ -133,7 +133,16 @@ class Mount:
 
     def download(self, name: str, dest: "str | Path | None" = None) -> "bytes | Path":
         """Fetch one object: its bytes, or written to ``dest`` and that path returned."""
-        data = _send(self._sign_get(name), None)
+        try:
+            data = _send(self._sign_get(name), None)
+        except ToftError as exc:
+            if exc.status == 404:
+                # The URL is signed for any name; the store is what answers
+                # that nothing is there — the first night of every nightly job.
+                raise _refused("not_found",
+                    f"{name!r} is not in {self.name!r} — nothing has been put there "
+                    "under that name yet", status=404) from None
+            raise
         if dest is None:
             return data
         out = Path(dest)

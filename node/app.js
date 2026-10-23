@@ -271,7 +271,20 @@ export class Mount {
 
   /** Fetch one object's bytes, as a Buffer. */
   async download(name) {
-    return sendSigned(await this.#signGet(name, false));
+    try {
+      return await sendSigned(await this.#signGet(name, false));
+    } catch (err) {
+      if (err instanceof ToftError && err.status === 404) {
+        // The URL is signed for any name; the store is what answers that
+        // nothing is there — the first night of every nightly job.
+        throw refused("not_found",
+          `${JSON.stringify(name)} is not in ${JSON.stringify(this.name)} — nothing has been ` +
+            "put there under that name yet",
+          { status: 404 },
+        );
+      }
+      throw err;
+    }
   }
 
   /**
