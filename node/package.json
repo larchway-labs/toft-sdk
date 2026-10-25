@@ -6,7 +6,7 @@
   "main": "index.js",
   "exports": { ".": "./index.js" },
   "engines": { "node": ">=18" },
-  "files": ["index.js", "app.js", "caller.js", "data.js", "jobs.js", "notify.js", "transport.js", "viewer.js"],
+  "files": ["index.js", "app.js", "caller.js", "data.js", "jobs.js", "notify.js", "tokens.js", "transport.js", "viewer.js"],
   "scripts": { "test": "node --test" },
   "license": "Apache-2.0"
 }

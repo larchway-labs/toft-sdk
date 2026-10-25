@@ -109,6 +109,7 @@ import {
   respond,
 } from "./jobs.js";
 import { Notify, Send } from "./notify.js";
+import { Token, accessToken, azureCredential, resetTokenCache } from "./tokens.js";
 import {
   APP_CONTRACT_VERSION,
   AppTransport,
@@ -470,7 +471,11 @@ export {
   REQUEST_DEADLINE_HEADER,
   Send,
   TERMINAL_STATUSES,
+  Token,
   VersionConflict,
+  accessToken,
+  azureCredential,
+  resetTokenCache,
   Viewer,
   mounts,
   resetIdentityCache,
@@ -498,6 +503,8 @@ export default {
   scratchDir,
   sessionScratchDir,
   newSessionId,
+  accessToken,
+  azureCredential,
   SESSION_HEADER,
   ACT_FOR_HEADER,
   ROLE_HEADER,

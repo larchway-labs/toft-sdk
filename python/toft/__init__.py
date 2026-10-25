@@ -116,6 +116,7 @@ from .jobs import JobRun, Jobs, QueueFull, WaitTimeout
 from .notifier import Notify, Send
 from .resources import Mount, mounts, storage, store
 from .scratch import SESSION_HEADER, new_session_id, scratch_dir, session_scratch_dir
+from .tokens import AzureCredential, Folder, Token, access_token, azure_credential
 from .viewer import ACT_FOR_HEADER, Identity, Viewer, viewer, who
 
 # The singletons app code reaches for. All lazy: constructing them touches
@@ -162,6 +163,9 @@ __all__ = [
     "scratch_dir",
     "session_scratch_dir",
     "new_session_id",
+    # A file connection's own token, for Microsoft's or Google's SDK.
+    "access_token",
+    "azure_credential",
     # Inside a job: the run's own view of itself. None everywhere else.
     "run",
     # Types worth naming in app code.
@@ -180,6 +184,9 @@ __all__ = [
     "Data",
     "Document",
     "VersionConflict",
+    "Token",
+    "Folder",
+    "AzureCredential",
     "ToftError",
     "SESSION_HEADER",
     "ACT_FOR_HEADER",
