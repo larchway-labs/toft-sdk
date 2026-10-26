@@ -24,7 +24,7 @@ Every tag is a Toft release: `v0.9.6` is the SDK that Toft 0.9.6
 embeds. A tag is never moved.
 
 The documentation for each call is in the CLI & SDK guide:
-https://larchway-labs.github.io/toft-docs/latest/cli/
+https://docs.gettoft.com/latest/cli/
 
 ## License
 
