@@ -150,6 +150,7 @@ export class Mount {
       throw refused("not_mounted",
         `${JSON.stringify(this.name)} is not mounted here — on this install the app reaches it ` +
           `through the platform: use list(), upload(), download() or url()`,
+        { hint: "use upload(), download() or url() — this install reaches the store through the platform" },
       );
     }
     return this.mountPath;
@@ -194,12 +195,14 @@ export class Mount {
       throw refused("not_mounted",
         `${JSON.stringify(this.name)} is not mounted here, so put() has nowhere to copy to — ` +
           `use upload(), which reaches it through the platform`,
+        { hint: "use upload(), which reaches the store through the platform" },
       );
     }
     if (!this.writable) {
       throw refused("insufficient_access",
         `${JSON.stringify(this.name)} is mounted read-only, so this app cannot write to it. ` +
           `An administrator sets the access level where the resource is mapped.`,
+        { hint: "ask an administrator for `write` access where the resource is mapped" },
       );
     }
 
@@ -261,7 +264,10 @@ export class Mount {
           // level was the one the app started with.
           `${JSON.stringify(target)} already exists in ${JSON.stringify(this.name)}, and this ` +
             "app's access there is `write`, which creates new objects only",
-          { status: 412 },
+          {
+            status: 412,
+            hint: "upload under a new name, or ask an administrator for `full` access where the store is mapped",
+          },
         );
       }
       throw err;
@@ -280,7 +286,7 @@ export class Mount {
         throw refused("not_found",
           `${JSON.stringify(name)} is not in ${JSON.stringify(this.name)} — nothing has been ` +
             "put there under that name yet",
-          { status: 404 },
+          { status: 404, hint: "list() shows the names that are there" },
         );
       }
       throw err;
@@ -319,6 +325,7 @@ export class Mount {
       throw refused("not_a_store",
         `${JSON.stringify(this.name)} is a ${this.kind}, which is reached at its path — only ` +
           `an object store is reached over signed URLs`,
+        { hint: `use toft.storage(${JSON.stringify(this.name)}).path with the ordinary file APIs` },
       );
     }
     const params = new URLSearchParams({ folder: this.folder });
@@ -334,11 +341,18 @@ export class Mount {
  * A refusal this SDK makes itself, carrying the platform's envelope. None of
  * these is helped by trying again — a mapping, a name or a level is wrong — and
  * without a body the status rule would call a statusless error retryable, the
- * answer for a network failure. So each says so, with a code to branch on.
+ * answer for a network failure. So each says so, with a code to branch on —
+ * and, where there is a next step, a `hint` naming it. A wrong name gets the one
+ * hint every name refusal shares.
  */
-function refused(code, message, options = {}) {
-  return new ToftError(message, { ...options, body: { code, retryable: false } });
+function refused(code, message, { hint, ...options } = {}) {
+  if (hint === undefined && code === "invalid_name") hint = NAME_HINT;
+  const body = { code, retryable: false };
+  if (hint) body.hint = hint;
+  return new ToftError(message, { ...options, body });
 }
+
+const NAME_HINT = "use a relative name with forward slashes and no '.' or '..' segments";
 
 function encodeName(name) {
   return name.split("/").map(encodeURIComponent).join("/");
@@ -434,6 +448,7 @@ export function store(name, { folder } = {}) {
       `${JSON.stringify(name)} is a ${mount.kind}, not a store. A volume is a real ` +
         `filesystem — write to toft.storage(${JSON.stringify(name)}).path directly, with the ` +
         `ordinary file APIs.`,
+      { hint: `use toft.storage(${JSON.stringify(name)}).path with the ordinary file APIs` },
     );
   }
   return mount;
@@ -471,7 +486,8 @@ function resolveMount(name, folder, accessor) {
   // Before the mounts are read, as the other three SDKs do: no name is the
   // caller's mistake, not a resource that is missing.
   if (!name) {
-    throw refused("invalid_name", `${accessor}() needs the name an administrator gave the resource`);
+    throw refused("invalid_name", `${accessor}() needs the name an administrator gave the resource`,
+      { hint: "pass one of the names toft.mounts() lists" });
   }
   const all = mounts();
   const named = all.filter((m) => m.name === name);
@@ -483,6 +499,10 @@ function resolveMount(name, folder, accessor) {
       throw refused("not_mapped",
         `${JSON.stringify(name)} is mounted, but not at folder ${JSON.stringify(folder)}. ` +
           `Mounted here: ${describeFolders(named)}.`,
+        {
+          hint: `name a mounted folder: toft.${accessor}(${JSON.stringify(name)}, { folder: ` +
+            `${JSON.stringify(named[0].folder)} })`,
+        },
       );
     }
   } else if (named.length === 1) {
@@ -492,6 +512,10 @@ function resolveMount(name, folder, accessor) {
       `${named.length} mounts are named ${JSON.stringify(name)} — ${describeFolders(named)}. ` +
         `Name one: toft.${accessor}(${JSON.stringify(name)}, { folder: ` +
         `${JSON.stringify(named[0].folder)} }).`,
+      {
+        hint: `name the folder: toft.${accessor}(${JSON.stringify(name)}, { folder: ` +
+          `${JSON.stringify(named[0].folder)} })`,
+      },
     );
   }
 
@@ -504,6 +528,11 @@ function resolveMount(name, folder, accessor) {
       : `no storage resource called ${JSON.stringify(name)} is mapped to this app, and ` +
         `in fact none is. An administrator maps durable storage to an app under ` +
         `Admin → Storage.`,
+    {
+      hint: available.length
+        ? `use one of the names mapped to this app: ${available.join(", ")}`
+        : "ask an administrator to map storage on the app's Storage tab",
+    },
   );
 }
 

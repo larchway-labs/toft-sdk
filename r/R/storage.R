@@ -66,7 +66,8 @@ mount_path <- function(mount) {
   if (is.null(mount$path) || !nzchar(mount$path)) {
     stop(toft_refusal("not_mounted", sprintf(paste0(
       "'%s' is not mounted here — on this install the app reaches it through the platform: ",
-      "use store_list(), store_upload(), store_download() or store_url()"), mount$name)))
+      "use store_list(), store_upload(), store_download() or store_url()"), mount$name),
+      hint = "use store_upload(), store_download() or store_url() - this install reaches the store through the platform"))
   }
   mount$path
 }
@@ -99,7 +100,8 @@ storage <- function(name, folder = NULL) {
 # store("x") was told to call storage()).
 resolve_mount <- function(name, folder, accessor) {
   if (!is.character(name) || length(name) != 1 || is.na(name) || !nzchar(name)) {
-    stop(toft_refusal("invalid_name", paste0(accessor, "() needs the name an administrator gave the resource")))
+    stop(toft_refusal("invalid_name", paste0(accessor, "() needs the name an administrator gave the resource"),
+                      hint = "pass one of the names mounts() lists"))
   }
   available <- mounts()
   named <- Filter(function(m) identical(m$name, name), available)
@@ -113,7 +115,7 @@ resolve_mount <- function(name, folder, accessor) {
       stop(toft_refusal("not_mapped", sprintf(
         "'%s' is mounted, but not at folder '%s'. Mounted here: %s",
         name, folder, describe_folders(named)
-      )))
+      ), hint = sprintf("name a mounted folder: %s('%s', folder = '%s')", accessor, name, named[[1]]$folder)))
     }
   } else if (length(named) == 1) {
     return(named[[1]])
@@ -122,19 +124,20 @@ resolve_mount <- function(name, folder, accessor) {
       "%d mounts are named '%s' — %s. Name one: %s('%s', folder = '%s')",
       length(named), name, describe_folders(named), accessor,
       name, named[[1]]$folder
-    )))
+    ), hint = sprintf("name the folder: %s('%s', folder = '%s')", accessor, name, named[[1]]$folder)))
   }
 
   if (length(available) == 0) {
     stop(toft_refusal("not_mapped", sprintf(
       paste0("no storage resource named '%s', and this app has none mapped at all — ",
-             "an administrator maps storage on the app's Storage tab"), name)))
+             "an administrator maps storage on the app's Storage tab"), name),
+      hint = "ask an administrator to map storage on the app's Storage tab"))
   }
+  # Each name once: a resource mapped at two folders is one resource.
+  names <- paste(sort(unique(vapply(available, function(m) m$name, ""))), collapse = ", ")
   stop(toft_refusal("not_mapped", sprintf(
-    "no storage resource named '%s'. Mapped to this app: %s",
-    # Each name once: a resource mapped at two folders is one resource.
-    name, paste(sort(unique(vapply(available, function(m) m$name, ""))), collapse = ", ")
-  )))
+    "no storage resource named '%s'. Mapped to this app: %s", name, names
+  ), hint = paste0("use one of the names mapped to this app: ", names)))
 }
 
 #' Resolve one store by name
@@ -159,7 +162,7 @@ store <- function(name, folder = NULL) {
       paste0("'%s' is a %s, not a store. A volume is a real filesystem — write to ",
              "storage('%s')$path directly, with the ordinary file functions."),
       name, mount$kind, name
-    )))
+    ), hint = sprintf("use storage('%s')$path with the ordinary file functions", name)))
   }
   mount
 }
@@ -204,7 +207,8 @@ store_put <- function(mount, source, name = NULL) {
   if (is.null(mount$path) || !nzchar(mount$path)) {
     stop(toft_refusal("not_mounted", sprintf(paste0("'%s' is not mounted here, so store_put() has nowhere to copy to — ",
                         "use store_upload(), which reaches it through the platform"),
-                 mount$name)))
+                 mount$name),
+      hint = "use store_upload(), which reaches the store through the platform"))
   }
   if (missing(source) || !nzchar(source)) {
     stop(toft_refusal("bad_request", "store_put() needs the path of a local file to copy"))
@@ -218,7 +222,8 @@ store_put <- function(mount, source, name = NULL) {
   if (identical(mount$access, "read")) {
     stop(toft_refusal("insufficient_access", sprintf(
       paste0("'%s' is mounted read-only, so this app cannot write to it. An administrator ",
-             "sets the access level where the resource is mapped."), mount$name)))
+             "sets the access level where the resource is mapped."), mount$name),
+      hint = "ask an administrator for `write` access where the resource is mapped"))
   }
 
   destination <- file.path(mount$path, target)
@@ -287,8 +292,12 @@ store_upload <- function(mount, source, name = NULL) {
   if (status == 412) {
     # `write`, not mount$access: the store signs at the mapping's level now,
     # and only `write` is refused an existing name.
-    stop(toft_refusal("already_exists", sprintf("'%s' already exists in '%s', and this app's access there is `write`, which creates new objects only",
-                 target, mount$name)))
+    e <- toft_refusal("already_exists", sprintf("'%s' already exists in '%s', and this app's access there is `write`, which creates new objects only",
+                 target, mount$name),
+      hint = "upload under a new name, or ask an administrator for `full` access where the store is mapped")
+    # The store answered, so the status is its own, as not_found's is.
+    e$status <- 412L
+    stop(e)
   }
   check_signed_status(status)
   invisible(target)
@@ -308,7 +317,8 @@ store_download <- function(mount, name, dest = NULL) {
     # The URL is signed for any name; the store is what answers that nothing
     # is there — the first night of every nightly job.
     e <- toft_refusal("not_found", sprintf("'%s' is not in '%s' — nothing has been put there under that name yet",
-                                           name, mount$name))
+                                           name, mount$name),
+                      hint = "store_list() shows the names that are there")
     e$status <- 404L
     stop(e)
   }
@@ -363,7 +373,8 @@ store_route <- function(mount, route, name = "") {
   }
   if (nzchar(or_empty(mount$kind)) && !identical(mount$kind, "store")) {
     stop(toft_refusal("not_a_store", sprintf(paste0("'%s' is a %s, which is reached at its path — only an object store ",
-                        "is reached over signed URLs"), mount$name, mount$kind)))
+                        "is reached over signed URLs"), mount$name, mount$kind),
+      hint = sprintf("use storage('%s')$path with the ordinary file functions", mount$name)))
   }
   route <- sub("{slug}", utils::URLencode(mount$name, reserved = TRUE), route, fixed = TRUE)
   sub("{name}", encode_name(name), route, fixed = TRUE)
@@ -424,19 +435,21 @@ check_signed_status <- function(status) {
 # name is the caller's and the location is not, so a traversal segment would
 # write into the app's own filesystem — over its code, in the worst case —
 # rather than into the storage it was given.
+NAME_HINT <- "use a relative name with forward slashes and no '.' or '..' segments"
+
 check_relative_name <- function(name) {
   if (!nzchar(name)) {
-    stop(toft_refusal("invalid_name", "a name is required"))
+    stop(toft_refusal("invalid_name", "a name is required", hint = NAME_HINT))
   }
   if (startsWith(name, "/") || endsWith(name, "/")) {
-    stop(toft_refusal("invalid_name", sprintf("a name is relative to the mount, got '%s'", name)))
+    stop(toft_refusal("invalid_name", sprintf("a name is relative to the mount, got '%s'", name), hint = NAME_HINT))
   }
   if (grepl("\\", name, fixed = TRUE)) {
-    stop(toft_refusal("invalid_name", sprintf("a name must use forward slashes, got '%s'", name)))
+    stop(toft_refusal("invalid_name", sprintf("a name must use forward slashes, got '%s'", name), hint = NAME_HINT))
   }
   for (segment in strsplit(name, "/", fixed = TRUE)[[1]]) {
     if (!nzchar(segment) || identical(segment, ".") || identical(segment, "..")) {
-      stop(toft_refusal("invalid_name", sprintf("a name must not contain '%s' segments, got '%s'", segment, name)))
+      stop(toft_refusal("invalid_name", sprintf("a name must not contain '%s' segments, got '%s'", segment, name), hint = NAME_HINT))
     }
   }
   invisible(TRUE)

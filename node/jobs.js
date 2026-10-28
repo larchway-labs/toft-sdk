@@ -273,7 +273,7 @@ export class JobRun {
         body: {
           code: "would_outlive_request",
           retryable: false,
-          hint: "return toft.jobs.respond(run)",
+          hint: "return toft.jobs.respond(run, req)",
         },
       },
     );

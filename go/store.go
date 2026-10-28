@@ -107,7 +107,7 @@ func (m Mount) Upload(ctx context.Context, source, name string) (string, error) 
 			// `write`, not m.Access: the store signs at the mapping's level
 			// *now*, and only `write` is refused an existing name — the cached
 			// level was the one the app started with.
-			return "", &Error{Body: refusal("already_exists"), Status: e.Status, Message: fmt.Sprintf(
+			return "", &Error{Body: refusal("already_exists", "upload under a new name, or ask an administrator for `full` access where the store is mapped"), Status: e.Status, Message: fmt.Sprintf(
 				"%q already exists in %q, and this app's access there is `write`, which creates new objects only",
 				target, m.Name)}
 		}
@@ -127,7 +127,7 @@ func (m Mount) Download(ctx context.Context, name string) ([]byte, error) {
 	if errors.As(err, &e) && e.Status == http.StatusNotFound {
 		// The URL is signed for any name; the store is what answers that
 		// nothing is there — the first night of every nightly job.
-		return nil, &Error{Body: refusal("not_found"), Status: e.Status, Message: fmt.Sprintf(
+		return nil, &Error{Body: refusal("not_found", "call List to see the names that are there"), Status: e.Status, Message: fmt.Sprintf(
 			"%q is not in %q — nothing has been put there under that name yet", name, m.Name)}
 	}
 	return data, err
@@ -207,7 +207,8 @@ func (m Mount) mint(ctx context.Context, method, route string, body any, into *s
 // mapped twice is never a question the platform has to ask back.
 func (m Mount) storeRoute(route, name string, query map[string]string) (string, error) {
 	if m.Kind != "" && m.Kind != "store" {
-		return "", &Error{Body: refusal("not_a_store"), Message: fmt.Sprintf(
+		hint := fmt.Sprintf("use the path toft.Storage(%q) resolves, with the ordinary os and filepath calls", m.Name)
+		return "", &Error{Body: refusal("not_a_store", hint), Message: fmt.Sprintf(
 			"%q is a %s, which is reached at its path — only an object store is reached "+
 				"over signed URLs", m.Name, m.Kind)}
 	}
