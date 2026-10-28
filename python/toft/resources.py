@@ -106,7 +106,7 @@ class Mount:
         """Upload a local file as ``name`` (its own name by default).
 
         At ``write`` this creates a new object only, and an existing name is
-        a refusal that says so; ``overwrite`` and ``full`` replace. The bytes go
+        a refusal that says so; ``full`` replaces. The bytes go
         straight to the object store — the platform signs, and never sees them.
         """
         src = Path(source)

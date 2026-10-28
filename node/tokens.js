@@ -24,6 +24,8 @@
  * before every request costs one request to Toft an hour.
  */
 
+import { inspect } from "node:util";
+
 import { transport } from "./transport.js";
 
 /** How long before expiry, in milliseconds, a cached token is replaced. */
@@ -34,8 +36,12 @@ export class Token {
   constructor(raw) {
     const data = raw ?? {};
     const folder = data.folder ?? {};
-    /** The bearer token. Never log it. */
-    this.value = data.access_token ?? "";
+    /**
+     * The bearer token. Never log it. Not enumerable, so `console.log(token)`
+     * — the first thing anyone debugging a Graph call types — does not print
+     * it into the app's log, as the other three SDKs' printed forms do not.
+     */
+    Object.defineProperty(this, "value", { value: data.access_token ?? "", enumerable: false });
     /** When the provider stops accepting it. */
     this.expiresAt = new Date(data.expires_at ?? Date.now());
     /** The API it is for. */
@@ -52,6 +58,11 @@ export class Token {
     // Never the value: a token in a log line is held by whoever reads the log.
     return { resource: this.resource, expiresAt: this.expiresAt.toISOString(), folder: this.folder };
   }
+
+  /** What `console.log` and `util.inspect` print: the toJSON shape, no value. */
+  [inspect.custom](depth, options, inspectFn = inspect) {
+    return `Token ${inspectFn(this.toJSON(), options)}`;
+  }
 }
 
 const cache = new Map();
@@ -66,7 +77,7 @@ export async function accessToken(kind) {
   if (cached && cached.expiresAt.getTime() - Date.now() > REFRESH_MARGIN_MS) {
     return cached;
   }
-  const token = new Token(await transport().postJson(`/api/v1/app/tokens/${kind}`));
+  const token = new Token(await transport().postJson(`/api/v1/app/tokens/${encodeURIComponent(kind)}`));
   cache.set(kind, token);
   return token;
 }

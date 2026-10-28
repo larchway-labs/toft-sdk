@@ -229,8 +229,10 @@ def verify_role(key: str, blob: str, now: float) -> str:
     mac = hmac.new(key.encode(), b"toft-role\x00" + payload.encode(), hashlib.sha256).digest()
     want = base64.urlsafe_b64encode(mac).decode().rstrip("=")
     # Constant time, and before anything is parsed: structure decoded ahead of
-    # authentication is how a verifier grows a second entry point.
-    if not hmac.compare_digest(sig, want):
+    # authentication is how a verifier grows a second entry point. Bytes, not
+    # str: compare_digest raises TypeError on a non-ASCII str, and a header
+    # anything on the box can send must answer unknown rather than a 500.
+    if not hmac.compare_digest(sig.encode("utf-8", "surrogateescape"), want.encode()):
         return ROLE_UNKNOWN
 
     fields = payload.split(".")

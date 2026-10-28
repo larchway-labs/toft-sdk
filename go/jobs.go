@@ -337,7 +337,7 @@ func (r JobRun) Output(ctx context.Context) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return t.follow(ctx, fmt.Sprintf("%s/%s/output", jobRunsPath, r.ID), r.headers)
+	return t.follow(ctx, fmt.Sprintf("%s/%s/output", jobRunsPath, url.PathEscape(r.ID)), r.headers)
 }
 
 // OutputJSON decodes the output WriteOutputJSON wrote into v, and reports false
@@ -366,7 +366,7 @@ func (r JobRun) Logs(ctx context.Context, after int) ([]LogLine, error) {
 	if err != nil {
 		return nil, err
 	}
-	raw, err := t.get(ctx, fmt.Sprintf("%s/%s/logs?after=%d", jobRunsPath, r.ID, after), r.headers)
+	raw, err := t.get(ctx, fmt.Sprintf("%s/%s/logs?after=%d", jobRunsPath, url.PathEscape(r.ID), after), r.headers)
 	if err != nil {
 		return nil, err
 	}
@@ -444,7 +444,7 @@ func (r JobRun) Cancel(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	_, err = t.postJSON(ctx, fmt.Sprintf("%s/%s/cancel", jobRunsPath, r.ID), nil, "", r.headers)
+	_, err = t.postJSON(ctx, fmt.Sprintf("%s/%s/cancel", jobRunsPath, url.PathEscape(r.ID)), nil, "", r.headers)
 	return err
 }
 

@@ -275,7 +275,11 @@ export class Notify {
     if (name) part = new Part("file", name, part.content, part.contentType);
 
     const fields = {};
-    if (name) fields.name = basename(String(name));
+    // Verbatim. The part's filename is a basename, as every attachment's
+    // display name is; this field is the caller's intent, and it has to reach
+    // the platform's refusal with the separator still in it rather than land
+    // under a name nobody asked for.
+    if (name) fields.name = String(name);
     if (title) fields.title = title;
     if (comment) fields.comment = comment;
 
@@ -398,6 +402,6 @@ export class Notify {
   async status(send) {
     const id = send instanceof Send ? send.id : String(send ?? "");
     if (!id) throw new ToftError("status() needs the id of a send", { body: { code: "bad_request", retryable: false } });
-    return new Send(await transport().get(`${SENDS_PATH}/${id}`));
+    return new Send(await transport().get(`${SENDS_PATH}/${encodeURIComponent(id)}`));
   }
 }

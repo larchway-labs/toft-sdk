@@ -29,6 +29,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import quote
 
 from .session import transport
 
@@ -101,7 +102,7 @@ def access_token(kind: str) -> Token:
         cached = _cache.get(kind)
         if cached and cached.expires_at.timestamp() - time.time() > REFRESH_MARGIN:
             return cached
-    token = Token.from_json(transport().post_json(f"/api/v1/app/tokens/{kind}"))
+    token = Token.from_json(transport().post_json(f"/api/v1/app/tokens/{quote(kind, safe='')}"))
     with _lock:
         _cache[kind] = token
     return token

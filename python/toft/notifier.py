@@ -44,6 +44,7 @@ import uuid
 from dataclasses import dataclass, field
 from collections.abc import Mapping, Sequence
 from typing import Any, Iterable
+from urllib.parse import quote
 
 from .errors import ToftError
 from .session import transport
@@ -57,11 +58,11 @@ SENDS_PATH = "/api/v1/app/sends"
 
 def _notify_path(kind: str) -> str:
     """The general form: one route per shape, with the integration in the path."""
-    return f"/api/v1/app/notify/{kind}"
+    return f"/api/v1/app/notify/{quote(kind, safe='')}"
 
 
 def _deliver_path(kind: str) -> str:
-    return f"/api/v1/app/deliver/{kind}"
+    return f"/api/v1/app/deliver/{quote(kind, safe='')}"
 
 # Statuses that will not change again.
 TERMINAL_STATUSES = frozenset({"sent", "failed", "blocked", "abandoned"})
@@ -238,7 +239,11 @@ class Notify:
 
         fields: dict[str, str] = {}
         if name:
-            fields["name"] = part.filename
+            # Verbatim. The part's filename above is a basename, as every
+            # attachment's display name is; this field is the caller's intent,
+            # and it has to reach the platform's refusal with the separator
+            # still in it rather than land under a name nobody asked for.
+            fields["name"] = name
         if title:
             fields["title"] = title
         if comment:
@@ -403,7 +408,7 @@ class Notify:
         send_id = send.id if isinstance(send, Send) else str(send)
         if not send_id:
             raise ToftError("status() needs the id of a send", body={"code": "bad_request", "retryable": False})
-        raw = transport().get(f"{SENDS_PATH}/{send_id}")
+        raw = transport().get(f"{SENDS_PATH}/{quote(send_id, safe='')}")
         return Send.from_raw(raw)
 
 

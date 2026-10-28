@@ -20,6 +20,43 @@
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_RETRY_AFTER_MS = 2_000;
 
+/**
+ * How long one object-store transfer may take — a presigned GET or PUT. Five
+ * minutes, as in the other three SDKs: undici's own idle timeouts are all that
+ * bounded these before, and a slow-dripping store could hold a request past
+ * the gateway's deadline.
+ */
+export const UPLOAD_TIMEOUT_MS = 300_000;
+
+/**
+ * A request to the object store over a URL the platform minted: no Toft header
+ * (the URL is the whole authorization), and the transfer bound above. Rejects
+ * with the plain `fetch` error, so each caller keeps its own sentence; a
+ * timeout is a ToftError that says so.
+ */
+export async function fetchStore(url, init = {}) {
+  try {
+    return await fetch(url, { ...init, signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS) });
+  } catch (err) {
+    if (err.name === "TimeoutError" || err.name === "AbortError") {
+      throw new ToftError(`the object store did not finish within ${UPLOAD_TIMEOUT_MS}ms`);
+    }
+    throw err;
+  }
+}
+
+/**
+ * A redirect on an ordinary call is the platform answering a question the
+ * method did not ask. Refused rather than followed: `fetch` replays custom
+ * headers — the act-for blob, the idempotency key — to whatever host the
+ * Location names. Only `follow` has a redirect to deal with, by hand.
+ */
+export function refuseRedirect(resp, path) {
+  if (resp.status >= 300 && resp.status < 400) {
+    throw new ToftError(`unexpected redirect from ${path}`, { status: resp.status });
+  }
+}
+
 /** The app contract version this SDK speaks, sent on every call. */
 export const APP_CONTRACT_VERSION = "1";
 export const CONTRACT_HEADER = "X-Toft-App-Contract";
@@ -268,7 +305,7 @@ export class AppTransport {
     try {
       resp = await fetch(`${this.baseUrl}${path}`, {
         method: "POST",
-        redirect: "follow",
+        redirect: "manual",
         signal: controller.signal,
         headers: {
           Authorization: `Bearer ${this.token}`,
@@ -291,6 +328,7 @@ export class AppTransport {
     } finally {
       clearTimeout(timer);
     }
+    refuseRedirect(resp, path);
     const text = await resp.text();
     if (!resp.ok) throw errorFromText(resp, text);
     return text ? JSON.parse(text) : null;
@@ -316,7 +354,13 @@ export class AppTransport {
       if (!location) {
         throw new ToftError("the platform redirected without a location");
       }
-      const object = await fetch(location);
+      let object;
+      try {
+        object = await fetchStore(location);
+      } catch (err) {
+        if (err instanceof ToftError) throw err;
+        throw new ToftError(`fetching the object: ${err.message}`);
+      }
       if (!object.ok) {
         throw new ToftError(`fetching the object: ${object.statusText}`, {
           status: object.status,
@@ -339,7 +383,8 @@ export class AppTransport {
   }
 
   async #once(method, path, body, headers) {
-    const resp = await this.#fetch(method, path, body, headers, "follow");
+    const resp = await this.#fetch(method, path, body, headers, "manual");
+    refuseRedirect(resp, path);
     const text = await resp.text();
     if (!resp.ok) throw errorFromText(resp, text);
     return text ? JSON.parse(text) : null;

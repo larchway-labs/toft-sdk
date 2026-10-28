@@ -465,7 +465,7 @@ job_output <- function(run, json = FALSE) {
     location <- curl::parse_headers_list(resp$headers)[["location"]]
     # A fresh handle: the presigned URL is the whole authorization, and the
     # app's bearer token has no business at the store's host.
-    fetched <- curl::curl_fetch_memory(location, handle = curl::new_handle())
+    fetched <- curl::curl_fetch_memory(location, handle = store_handle())
     if (fetched$status_code >= 400) {
       stop(toft_refusal("output_unreadable", sprintf(
         "fetching run %s's output from the store answered %d", run$id, fetched$status_code),
@@ -585,7 +585,7 @@ run_write_output <- function(data, json = FALSE) {
   if (!is.raw(data)) {
     data <- charToRaw(enc2utf8(paste(as.character(data), collapse = "\n")))
   }
-  handle <- curl::new_handle()
+  handle <- store_handle()
   curl::handle_setopt(handle, customrequest = "PUT", post = TRUE,
                       postfieldsize = length(data), postfields = data)
   resp <- curl::curl_fetch_memory(uri, handle = handle)

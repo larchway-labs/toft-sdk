@@ -41,7 +41,7 @@ from typing import Any, Optional
 from .caller import ROLE_UNKNOWN
 from .errors import ToftError
 from .jobs import _parse_time
-from .transport import _from_http_error
+from .transport import _from_http_error_or_redirect, _open_without_redirects
 
 DEFAULT_TIMEOUT = 30.0
 
@@ -77,13 +77,15 @@ class _RunnerTransport:
         req.add_header("X-Toft-Runner-Version", RUNNER_CONTRACT_VERSION)
 
         try:
-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+            # Redirects refused, as on the app transport: the run token must
+            # not follow a Location to another host.
+            with _open_without_redirects(req, self._timeout) as resp:
                 payload = resp.read()
                 return json.loads(payload) if payload else None
         except urllib.error.HTTPError as exc:
             # The transport's own reading of a refusal, so a job's run calls
             # carry the envelope — code, retryable, hint — as the app's do.
-            raise _from_http_error(exc) from None
+            raise _from_http_error_or_redirect(exc, path) from None
         except urllib.error.URLError as exc:
             raise ToftError(f"cannot reach Toft at {self._base}: {exc.reason}") from None
 

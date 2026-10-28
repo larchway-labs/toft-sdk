@@ -251,7 +251,7 @@ store_list <- function(mount, path = "", cursor = "") {
 #' Upload a local file to a store, over the platform's signed URLs
 #'
 #' At `write` this creates new objects only, and an existing name is a refusal
-#' that says so; `overwrite` and `full` replace. The bytes go straight to the
+#' that says so; `full` replaces. The bytes go straight to the
 #' object store — the platform signs, and never sees them.
 #'
 #' @param mount A store, as [store()] returns it.
@@ -380,7 +380,7 @@ send_signed <- function(signed, data, keep = FALSE) {
   if (is.null(signed) || is.null(signed$url) || !nzchar(signed$url)) {
     stop("the platform returned no signed URL", call. = FALSE)
   }
-  handle <- curl::new_handle()
+  handle <- store_handle()
   method <- if (is.null(signed$method) || !nzchar(signed$method)) "GET" else signed$method
   curl::handle_setopt(handle, customrequest = method)
   if (!is.null(data)) {

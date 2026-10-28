@@ -40,9 +40,11 @@ import (
 	"time"
 )
 
-const (
-	defaultTimeout = 30 * time.Second
+// defaultTimeout bounds one platform round trip. A variable only so a test can
+// shorten it; nothing else assigns it.
+var defaultTimeout = 30 * time.Second
 
+const (
 	// How long to wait before the single retry when the platform did not say.
 	defaultRetryAfter = 2 * time.Second
 
@@ -190,10 +192,13 @@ func (t *transport) postMultipart(ctx context.Context, path string, fields map[s
 // can explain (an expired artifact, a capability that is off) comes back with
 // the platform's own words.
 func (t *transport) follow(ctx context.Context, path string, headers map[string]string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, defaultTimeout)
+	// The platform round trip has the ordinary bound; the store fetch has the
+	// transfer one, from the caller's own context. Deriving the second from
+	// the first would cap a large download at the shorter of the two.
+	pctx, cancel := context.WithTimeout(ctx, defaultTimeout)
 	defer cancel()
 
-	req, err := t.request(ctx, http.MethodGet, path, nil, "", headers)
+	req, err := t.request(pctx, http.MethodGet, path, nil, "", headers)
 	if err != nil {
 		return nil, err
 	}

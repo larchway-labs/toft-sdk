@@ -300,7 +300,7 @@ class JobRun:
 
     def refresh(self) -> "JobRun":
         """Re-read this run and return a fresh handle."""
-        return self._again(transport().get(f"{RUNS_PATH}/{self.id}", self._headers))
+        return self._again(transport().get(f"{RUNS_PATH}/{quote(self.id, safe='')}", self._headers))
 
     def wait(
         self,
@@ -388,7 +388,7 @@ class JobRun:
         ``succeeded`` with nothing behind it is the worst failure shape
         available here.
         """
-        return transport().follow(f"{RUNS_PATH}/{self.id}/output", self._headers)
+        return transport().follow(f"{RUNS_PATH}/{quote(self.id, safe='')}/output", self._headers)
 
     def output_json(self) -> Any:
         """The output :meth:`Run.write_output_json` wrote, decoded — ``None``
@@ -401,7 +401,7 @@ class JobRun:
 
     def logs(self, after_seq: int = 0) -> list[dict]:
         """Log lines after ``after_seq``: ``{seq, at, stream, line}`` each."""
-        raw = transport().get(f"{RUNS_PATH}/{self.id}/logs?after={int(after_seq)}", self._headers)
+        raw = transport().get(f"{RUNS_PATH}/{quote(self.id, safe='')}/logs?after={int(after_seq)}", self._headers)
         return list(raw.get("lines") or []) if raw else []
 
     def tail(self, poll_interval: float = 2.0) -> Iterator[dict]:
@@ -435,7 +435,7 @@ class JobRun:
         acting as itself may cancel a run with no person behind it. Cancelling
         through the wrong one of those raises rather than quietly doing nothing.
         """
-        transport().post_json(f"{RUNS_PATH}/{self.id}/cancel", None, headers=self._headers)
+        transport().post_json(f"{RUNS_PATH}/{quote(self.id, safe='')}/cancel", None, headers=self._headers)
 
 
 class Jobs:

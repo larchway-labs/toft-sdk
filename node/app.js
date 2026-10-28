@@ -25,7 +25,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 
-import { ToftError, transport } from "./transport.js";
+import { ToftError, fetchStore, transport } from "./transport.js";
 
 const ENV_STORAGE = "TOFT_STORAGE";
 const ENV_BASE_PATH = "BASE_PATH";
@@ -352,12 +352,13 @@ async function sendSigned(signed, body) {
   if (!signed?.url) throw new ToftError("the platform returned no signed URL");
   let resp;
   try {
-    resp = await fetch(signed.url, {
+    resp = await fetchStore(signed.url, {
       method: signed.method || "GET",
       headers: signed.headers ?? {},
       body,
     });
   } catch (err) {
+    if (err instanceof ToftError) throw err;
     throw new ToftError(`cannot reach the object store: ${err.message}`);
   }
   if (!resp.ok) {

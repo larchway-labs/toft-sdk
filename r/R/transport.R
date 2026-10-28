@@ -35,6 +35,18 @@ api_url <- function() {
 # Seconds the built-in retry waits when a refusal names no Retry-After.
 DEFAULT_RETRY_AFTER <- 2
 
+# Seconds one platform round trip may take, and one object-store transfer — the
+# bounds the other three SDKs set. Without them a platform or a store that
+# accepted the connection and stalled held a Shiny or plumber worker forever.
+DEFAULT_TIMEOUT <- 30
+UPLOAD_TIMEOUT <- 300
+
+# store_handle is a curl handle for a URL the platform minted: no Toft header,
+# because the URL is the whole authorization, and the transfer bound.
+store_handle <- function() {
+  curl::new_handle(timeout = UPLOAD_TIMEOUT)
+}
+
 toft_request <- function(method, path, body = NULL, query = NULL, extra_headers = NULL,
                          token = NULL, parse = TRUE) {
   if (is.null(token)) {
@@ -67,10 +79,12 @@ toft_request <- function(method, path, body = NULL, query = NULL, extra_headers 
     headers[["Content-Type"]] <- "application/json"
     curl::handle_setopt(handle, postfields = payload)
   }
-  curl::handle_setopt(handle, customrequest = method)
-  if (!parse) {
-    curl::handle_setopt(handle, followlocation = FALSE)
-  }
+  # Redirects are never followed, on any call. libcurl drops Authorization on
+  # a cross-host hop but replays the act-for blob and the idempotency key; the
+  # one route that redirects (`parse = FALSE`) is followed by hand, and on any
+  # other a 3xx is refused below, as the Go SDK refuses it.
+  curl::handle_setopt(handle, customrequest = method, followlocation = FALSE,
+                      timeout = DEFAULT_TIMEOUT)
   curl::handle_setheaders(handle, .list = as.list(headers))
 
   resp <- curl::curl_fetch_memory(url, handle = handle)
@@ -98,6 +112,11 @@ toft_request <- function(method, path, body = NULL, query = NULL, extra_headers 
   }
   if (!parse) {
     return(resp)
+  }
+  if (resp$status_code >= 300) {
+    err <- toft_refusal("unexpected_redirect", sprintf("unexpected redirect from %s", path))
+    err$status <- resp$status_code
+    stop(err)
   }
   if (!nzchar(trimws(text))) {
     return(invisible(NULL))

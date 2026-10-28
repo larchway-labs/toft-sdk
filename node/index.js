@@ -115,6 +115,8 @@ import {
   AppTransport,
   ToftError,
   errorFromText,
+  fetchStore,
+  refuseRedirect,
   resetTransport,
   transport,
 } from "./transport.js";
@@ -150,6 +152,8 @@ async function runnerRequest(baseUrl, token, method, path, body, timeoutMs = DEF
   try {
     const resp = await fetch(`${baseUrl.replace(/\/$/, "")}${path}`, {
       method,
+      // The run token must not follow a Location to another host.
+      redirect: "manual",
       signal: controller.signal,
       headers: {
         Authorization: `Bearer ${token}`,
@@ -159,6 +163,7 @@ async function runnerRequest(baseUrl, token, method, path, body, timeoutMs = DEF
       body: body === undefined ? undefined : JSON.stringify(body),
     });
 
+    refuseRedirect(resp, path);
     const text = await resp.text();
     // The transport's own reading of a refusal, so a job's run calls carry the
     // envelope — code, retryable, hint — exactly as the app's calls do.
@@ -299,7 +304,13 @@ export class Run {
     if (!this.outputUri) {
       throw new ToftError("this run has no output location", { body: { code: "no_output", retryable: false } });
     }
-    const resp = await fetch(this.outputUri, { method: "PUT", body: data });
+    let resp;
+    try {
+      resp = await fetchStore(this.outputUri, { method: "PUT", body: data });
+    } catch (err) {
+      if (err instanceof ToftError) throw err;
+      throw new ToftError(`uploading output: ${err.message}`);
+    }
     if (!resp.ok) throw new ToftError(`uploading output: ${resp.statusText}`, { status: resp.status });
   }
 

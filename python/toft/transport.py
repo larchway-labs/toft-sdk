@@ -290,15 +290,37 @@ class AppTransport:
             req.add_header(name, value)
 
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with _open_without_redirects(req, timeout) as resp:
                 payload = resp.read()
                 return json.loads(payload) if payload else None
         except urllib.error.HTTPError as exc:
-            raise _from_http_error(exc) from None
+            raise _from_http_error_or_redirect(exc, path) from None
         except urllib.error.URLError as exc:
             raise ToftError(
                 f"cannot reach Toft at {self._base}: {exc.reason}"
             ) from None
+
+
+def _open_without_redirects(req: urllib.request.Request, timeout: float):
+    """Open a platform request with redirects refused.
+
+    ``urlopen``'s default opener follows a 3xx and copies the original
+    request's headers onto the next one — the bearer token and the act-for
+    blob included, to whatever host the Location names. Only :meth:`follow`
+    has a redirect to deal with, and it deals with it by hand.
+    """
+    return urllib.request.build_opener(_NoRedirects).open(req, timeout=timeout)
+
+
+def _from_http_error_or_redirect(exc: urllib.error.HTTPError, path: str) -> ToftError:
+    """A refusal in the platform's words, or a redirect named as one.
+
+    A redirect on an ordinary call is the platform answering a question this
+    method did not ask, as the Go SDK says.
+    """
+    if 300 <= exc.code < 400:
+        return ToftError(f"unexpected redirect from {path}", status=exc.code)
+    return _from_http_error(exc)
 
 
 class _NoRedirects(urllib.request.HTTPRedirectHandler):

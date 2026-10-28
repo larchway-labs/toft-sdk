@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 )
 
@@ -305,7 +306,7 @@ func (NotifyClient) Status(ctx context.Context, sendID string) (Send, error) {
 	if err != nil {
 		return Send{}, err
 	}
-	raw, err := t.get(ctx, sendsPath+"/"+sendID, nil)
+	raw, err := t.get(ctx, sendsPath+"/"+url.PathEscape(sendID), nil)
 	if err != nil {
 		return Send{}, err
 	}
