@@ -426,7 +426,9 @@ def _addresses(value: str | Sequence[str], field_name: str) -> list[str]:
         items = list(value)
     out = [str(v).strip() for v in items if str(v).strip()]
     if items and not out:
-        raise ToftError(f"'{field_name}' held only blank addresses", body={"code": "bad_request", "retryable": False})
+        raise ToftError(f"'{field_name}' held only blank addresses", body={
+            "code": "bad_request", "retryable": False,
+            "hint": f"give '{field_name}' at least one address, or leave it out"})
     return out
 
 

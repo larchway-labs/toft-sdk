@@ -411,7 +411,7 @@ export class Jobs {
       throw new ToftError(
         `jobs.start does not take ${Object.keys(rest).join(", ")}: params are a run's only ` +
           `input, and anything bigger belongs in the app's storage, named by a param`,
-        { body: { code: "bad_request", retryable: false } },
+        { body: { code: "bad_request", retryable: false, hint: "jobs.start(job, { params: { … } })" } },
       );
     }
     const body = {};
