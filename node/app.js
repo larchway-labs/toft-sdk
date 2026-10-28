@@ -427,8 +427,8 @@ export function mounts() {
  * `storage()` keeps answering for both kinds, because app code that has a volume
  * mounted has done nothing wrong.
  */
-export function store(name, options) {
-  const mount = storage(name, options);
+export function store(name, { folder } = {}) {
+  const mount = resolveMount(name, folder, "store");
   if (mount.kind && mount.kind !== "store") {
     throw refused("not_a_store",
       `${JSON.stringify(name)} is a ${mount.kind}, not a store. A volume is a real ` +
@@ -459,10 +459,19 @@ export function store(name, options) {
  * ambiguous when there is genuinely more than one. `folder: ""` names the root.
  */
 export function storage(name, { folder } = {}) {
+  return resolveMount(name, folder, "storage");
+}
+
+/**
+ * `storage`'s body, with the accessor the caller used — `storage` or `store` —
+ * so a refusal names the call to make rather than the other one (drills D17:
+ * `store("x")` was told to call `toft.storage`).
+ */
+function resolveMount(name, folder, accessor) {
   // Before the mounts are read, as the other three SDKs do: no name is the
   // caller's mistake, not a resource that is missing.
   if (!name) {
-    throw refused("invalid_name", "storage() needs the name an administrator gave the resource");
+    throw refused("invalid_name", `${accessor}() needs the name an administrator gave the resource`);
   }
   const all = mounts();
   const named = all.filter((m) => m.name === name);
@@ -481,7 +490,7 @@ export function storage(name, { folder } = {}) {
   } else if (named.length > 1) {
     throw refused("ambiguous_mount",
       `${named.length} mounts are named ${JSON.stringify(name)} — ${describeFolders(named)}. ` +
-        `Name one: toft.storage(${JSON.stringify(name)}, { folder: ` +
+        `Name one: toft.${accessor}(${JSON.stringify(name)}, { folder: ` +
         `${JSON.stringify(named[0].folder)} }).`,
     );
   }

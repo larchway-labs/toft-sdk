@@ -174,7 +174,7 @@ func Mounts() ([]Mount, error) {
 // Returning the first was the earlier behaviour and it made the choice by the
 // alphabetical order of paths an administrator chose — a silent answer to a
 // question the caller did not know they were asking. [StorageIn] names one.
-func Storage(name string) (Mount, error) { return storageIn(name, nil) }
+func Storage(name string) (Mount, error) { return storageIn(name, nil, "Storage") }
 
 // StorageIn resolves one resource by name and folder, where it is mapped more
 // than once. The empty string is the root mapping, named explicitly.
@@ -182,11 +182,14 @@ func Storage(name string) (Mount, error) { return storageIn(name, nil) }
 // A second function rather than an option struct: Go has no keyword arguments,
 // and a struct carrying one string reads worse at every call site than the name
 // does.
-func StorageIn(name, folder string) (Mount, error) { return storageIn(name, &folder) }
+func StorageIn(name, folder string) (Mount, error) { return storageIn(name, &folder, "Storage") }
 
-func storageIn(name string, folder *string) (Mount, error) {
+// storageIn is the resolver behind both accessors. accessor is the one the
+// caller used — "Storage" or "Store" — so a refusal names the call to make
+// rather than the other one (drills D17: Store("x") was told StorageIn).
+func storageIn(name string, folder *string, accessor string) (Mount, error) {
 	if name == "" {
-		return Mount{}, &Error{Body: refusal("invalid_name"), Message: "Storage needs the name an administrator gave the resource"}
+		return Mount{}, &Error{Body: refusal("invalid_name"), Message: accessor + " needs the name an administrator gave the resource"}
 	}
 	available, err := Mounts()
 	if err != nil {
@@ -214,8 +217,8 @@ func storageIn(name string, folder *string) (Mount, error) {
 		return named[0], nil
 	case len(named) > 1:
 		return Mount{}, &Error{Body: refusal("ambiguous_mount"), Message: fmt.Sprintf(
-			"%d mounts are named %q — %s. Name one: toft.StorageIn(%q, %q)",
-			len(named), name, describeFolders(named), name, named[0].Folder)}
+			"%d mounts are named %q — %s. Name one: toft.%sIn(%q, %q)",
+			len(named), name, describeFolders(named), accessor, name, named[0].Folder)}
 	}
 	if len(available) == 0 {
 		return Mount{}, &Error{Body: refusal("not_mapped"), Message: fmt.Sprintf(
@@ -264,13 +267,13 @@ func describeFolders(named []Mount) string {
 // [Storage] keeps answering for both kinds, because app code that has a volume
 // mounted has done nothing wrong.
 func Store(name string) (Mount, error) {
-	mount, err := Storage(name)
+	mount, err := storageIn(name, nil, "Store")
 	return checkStore(name, mount, err)
 }
 
 // StoreIn is [Store]'s folder-naming half, on [StorageIn]'s terms.
 func StoreIn(name, folder string) (Mount, error) {
-	mount, err := StorageIn(name, folder)
+	mount, err := storageIn(name, &folder, "Store")
 	return checkStore(name, mount, err)
 }
 

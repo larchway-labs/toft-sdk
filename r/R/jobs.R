@@ -128,15 +128,19 @@ parse_rfc3339 <- function(raw) {
 #' @param request The request being served: plumber's \code{req} or
 #'   \code{req$HEADERS}, Shiny's \code{session$request}, or a named list.
 #' @return A \code{toft_viewer_jobs} to pass to \code{job_start()} or
-#'   \code{job_mine()}. Refused with \code{no_viewer} when nobody is signed in.
+#'   \code{job_mine()}. Refused with \code{no_viewer} when the request carries no
+#'   act-for header (an API key, or around the gateway). An anonymous visitor to
+#'   a public app does carry one, and the start is refused by the platform with
+#'   \code{viewer_anonymous}.
 #' @export
 viewer_jobs <- function(request) {
   blob <- request_header(request, ACT_FOR_HEADER)
   if (!nzchar(blob)) {
     stop(toft_refusal("no_viewer", paste0(
       "no ", ACT_FOR_HEADER, " header on this request, so there is no viewer to act ",
-      "for. Toft's gateway sets it only for a signed-in browser session; a request ",
-      "made with an API key, or one that reached the app around the gateway, carries ",
+      "for. Toft's gateway sets it on every browser request, an anonymous visitor ",
+      "to a public app included (that header names nobody, and a start in its name ",
+      "is refused viewer_anonymous); a request made with an API key, or one that reached the app around the gateway, carries ",
       "none. Start the job as the app itself, deliberately, rather than treating this ",
       "as the same thing."),
       hint = "use job_start(...) to start it as the app"))

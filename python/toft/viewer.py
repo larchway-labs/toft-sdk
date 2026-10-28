@@ -166,7 +166,9 @@ def viewer(headers: Mapping[str, Any] | Any) -> Viewer:
     if not blob:
         raise ToftError(
             f"no {ACT_FOR_HEADER} header on this request, so there is no viewer to act "
-            f"for. Toft's proxy sets it only for a signed-in browser session, so its "
+            f"for. Toft's proxy sets it on every browser request through the gateway, "
+            f"an anonymous visitor to a public app included (that header names nobody, "
+            f"and a start in its name is refused viewer_anonymous), so its "
             f"absence means the request came with an API key (the gateway authorizes a "
             f"key but asserts no person to the app — `toft fetch --session` is a signed-in "
             f"request), or the app was reached outside the gateway — a health check, a "

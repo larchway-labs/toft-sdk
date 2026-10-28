@@ -365,8 +365,15 @@ def storage(name: str, folder: str | None = None) -> Mount:
     ambiguous when there is genuinely more than one. ``folder=""`` names the
     root explicitly.
     """
+    return _resolve(name, folder, "storage")
+
+
+def _resolve(name: str, folder: str | None, accessor: str) -> Mount:
+    """:func:`storage`'s body, with the accessor the caller used — ``storage``
+    or ``store`` — so a refusal names the call to make rather than the other
+    one (drills D17: ``store("x")`` was told to call ``toft.storage``)."""
     if not name:
-        raise _refused("invalid_name", "storage() needs the name an administrator gave the resource")
+        raise _refused("invalid_name", f"{accessor}() needs the name an administrator gave the resource")
     available = mounts()
     named = [m for m in available if m.name == name]
 
@@ -384,7 +391,7 @@ def storage(name: str, folder: str | None = None) -> Mount:
     elif len(named) > 1:
         raise _refused("ambiguous_mount",
             f"{len(named)} mounts are named {name!r} — {_folders(named)}. "
-            f"Name one: toft.storage({name!r}, folder={named[0].folder!r})"
+            f"Name one: toft.{accessor}({name!r}, folder={named[0].folder!r})"
         )
 
     if not available:
@@ -420,7 +427,7 @@ def store(name: str, folder: str | None = None) -> Mount:
     ``storage()`` keeps answering for both kinds, because app code that has a
     volume mounted has done nothing wrong.
     """
-    mount = storage(name, folder)
+    mount = _resolve(name, folder, "store")
     if mount.kind and mount.kind != "store":
         raise _refused("not_a_store",
             f"{name!r} is a {mount.kind}, not a store. A volume is a real filesystem — "

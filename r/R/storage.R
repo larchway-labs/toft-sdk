@@ -31,7 +31,8 @@ mounts <- function() {
   parsed <- tryCatch(
     jsonlite::fromJSON(raw, simplifyVector = FALSE),
     error = function(e) {
-      stop(sprintf("%s is not valid JSON: %s", ENV_STORAGE, conditionMessage(e)), call. = FALSE)
+      stop(toft_refusal("storage_env_invalid",
+                        sprintf("%s is not valid JSON: %s", ENV_STORAGE, conditionMessage(e))))
     }
   )
   lapply(parsed, function(entry) {
@@ -89,8 +90,16 @@ mount_path <- function(mount) {
 #' @return One mount, as `mounts()` describes it.
 #' @export
 storage <- function(name, folder = NULL) {
-  if (missing(name) || !nzchar(name)) {
-    stop(toft_refusal("invalid_name", "storage() needs the name an administrator gave the resource"))
+  if (missing(name)) name <- ""
+  resolve_mount(name, folder, "storage")
+}
+
+# storage()'s body, with the accessor the caller used — "storage" or "store" —
+# so a refusal names the call to make rather than the other one (drills D17:
+# store("x") was told to call storage()).
+resolve_mount <- function(name, folder, accessor) {
+  if (!is.character(name) || length(name) != 1 || is.na(name) || !nzchar(name)) {
+    stop(toft_refusal("invalid_name", paste0(accessor, "() needs the name an administrator gave the resource")))
   }
   available <- mounts()
   named <- Filter(function(m) identical(m$name, name), available)
@@ -110,8 +119,8 @@ storage <- function(name, folder = NULL) {
     return(named[[1]])
   } else if (length(named) > 1) {
     stop(toft_refusal("ambiguous_mount", sprintf(
-      "%d mounts are named '%s' — %s. Name one: storage('%s', folder = '%s')",
-      length(named), name, describe_folders(named),
+      "%d mounts are named '%s' — %s. Name one: %s('%s', folder = '%s')",
+      length(named), name, describe_folders(named), accessor,
       name, named[[1]]$folder
     )))
   }
@@ -143,7 +152,8 @@ storage <- function(name, folder = NULL) {
 #' @return One mount.
 #' @export
 store <- function(name, folder = NULL) {
-  mount <- storage(name, folder)
+  if (missing(name)) name <- ""
+  mount <- resolve_mount(name, folder, "store")
   if (nzchar(mount$kind) && !identical(mount$kind, "store")) {
     stop(toft_refusal("not_a_store", sprintf(
       paste0("'%s' is a %s, not a store. A volume is a real filesystem — write to ",
@@ -187,7 +197,7 @@ store <- function(name, folder = NULL) {
 #' @export
 store_put <- function(mount, source, name = NULL) {
   if (is.null(mount) || is.null(mount$name)) {
-    stop("store_put() needs a mount, as store() returns it", call. = FALSE)
+    stop(toft_refusal("bad_request", "store_put() needs a mount, as store() returns it"))
   }
   # "" is the working directory, and copying there writes into the app's own
   # tree: a store that is not mounted is reached through the platform instead.
@@ -197,10 +207,10 @@ store_put <- function(mount, source, name = NULL) {
                  mount$name)))
   }
   if (missing(source) || !nzchar(source)) {
-    stop("store_put() needs the path of a local file to copy", call. = FALSE)
+    stop(toft_refusal("bad_request", "store_put() needs the path of a local file to copy"))
   }
   if (!file.exists(source)) {
-    stop(sprintf("no such file: %s", source), call. = FALSE)
+    stop(toft_refusal("bad_request", sprintf("no such file: %s", source)))
   }
   target <- if (is.null(name)) basename(source) else name
   check_relative_name(target)
@@ -261,7 +271,7 @@ store_list <- function(mount, path = "", cursor = "") {
 #' @export
 store_upload <- function(mount, source, name = NULL) {
   if (missing(source) || !file.exists(source)) {
-    stop(sprintf("no such file: %s", if (missing(source)) "" else source), call. = FALSE)
+    stop(toft_refusal("bad_request", sprintf("no such file: %s", if (missing(source)) "" else source)))
   }
   target <- if (is.null(name) || !nzchar(name)) basename(source) else name
   check_relative_name(target)
@@ -349,7 +359,7 @@ sign_get <- function(mount, name, attachment) {
 # contract test — sees which one each call reaches.
 store_route <- function(mount, route, name = "") {
   if (is.null(mount) || is.null(mount$name)) {
-    stop("this needs a store, as store() returns it", call. = FALSE)
+    stop(toft_refusal("bad_request", "this needs a store, as store() returns it"))
   }
   if (nzchar(or_empty(mount$kind)) && !identical(mount$kind, "store")) {
     stop(toft_refusal("not_a_store", sprintf(paste0("'%s' is a %s, which is reached at its path — only an object store ",
@@ -378,7 +388,9 @@ encode_name <- function(name) {
 # verbatim, and no Toft header at all — the URL is the whole authorization.
 send_signed <- function(signed, data, keep = FALSE) {
   if (is.null(signed) || is.null(signed$url) || !nzchar(signed$url)) {
-    stop("the platform returned no signed URL", call. = FALSE)
+    # Not the caller's mistake: an answer the platform should not have given.
+    # Uncoded and retryable, as the other three SDKs' statusless error is.
+    stop(toft_refusal("", "the platform returned no signed URL", retryable = TRUE))
   }
   handle <- store_handle()
   method <- if (is.null(signed$method) || !nzchar(signed$method)) "GET" else signed$method
