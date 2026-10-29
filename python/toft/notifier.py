@@ -367,7 +367,7 @@ class Notify:
         """
         recipients = _addresses(to, "to")
         if not recipients:
-            raise ToftError("email needs at least one recipient in 'to'", body={"code": "bad_request", "retryable": False})
+            raise ToftError("email needs at least one recipient in 'to'", body={"code": "no_recipient", "retryable": False, "hint": "name who it goes to: pass an address in to (or cc, bcc) — an email has no default recipient"})
         subject = _require_text(subject, "email subject")
         text = _require_text(text, "email text")
 

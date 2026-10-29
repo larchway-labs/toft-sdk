@@ -363,7 +363,7 @@ export class Notify {
   async email({ to, subject, text, html, cc, bcc, attachments, idempotencyKey } = {}) {
     const recipients = addresses(to, "to");
     if (!recipients.length) {
-      throw new ToftError("email needs at least one recipient in 'to'", { body: { code: "bad_request", retryable: false } });
+      throw new ToftError("email needs at least one recipient in 'to'", { body: { code: "no_recipient", retryable: false, hint: "name who it goes to: pass an address in to (or cc, bcc) — an email has no default recipient" } });
     }
     const body = {
       to: recipients,

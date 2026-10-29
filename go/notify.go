@@ -241,7 +241,7 @@ type EmailMessage struct {
 func (NotifyClient) Email(ctx context.Context, message EmailMessage) (Send, error) {
 	recipients := addresses(message.To)
 	if len(recipients) == 0 {
-		return Send{}, &Error{Body: refusal("bad_request"), Message: "email needs at least one recipient in To"}
+		return Send{}, &Error{Body: refusal("no_recipient", "name who it goes to: pass an address in To (or CC, BCC) — an email has no default recipient"), Message: "email needs at least one recipient in To"}
 	}
 	if err := requireText(message.Subject, "email subject"); err != nil {
 		return Send{}, err
