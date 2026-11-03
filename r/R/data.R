@@ -94,11 +94,15 @@ if_match <- function(if_version) {
 # 1:3 and "str" reached the platform as an array and a string, list(1, 2) as an
 # array, and list() as `[]` — so an R app could not write the empty object at
 # all.
-as_document <- function(value, what) {
+# `returns` is TRUE for app_data_update()'s function, whose *result* is the
+# document: "takes a named list" there read as an instruction about its
+# argument (D-28).
+as_document <- function(value, what, returns = FALSE) {
+  verb <- if (returns) "must return" else "takes"
   if (!is.list(value) || is.data.frame(value)) {
     stop(toft_refusal("bad_request", sprintf(paste0(
-      "%s takes a named list — app data holds one JSON object, and a %s is not one"),
-      what, if (is.data.frame(value)) "data frame" else class(value)[1]),
+      "%s %s a named list — app data holds one JSON object, and a %s is not one"),
+      what, verb, if (is.data.frame(value)) "data frame" else class(value)[1]),
       hint = "pass a named list, such as list(period = \"monthly\")"))
   }
   if (length(value) == 0) {
@@ -108,8 +112,8 @@ as_document <- function(value, what) {
   keys <- names(value)
   if (is.null(keys) || any(is.na(keys)) || any(!nzchar(keys))) {
     stop(toft_refusal("bad_request", sprintf(paste0(
-      "%s takes a named list — every element needs a name, because an unnamed ",
-      "list is a JSON array and app data holds one JSON object"), what),
+      "%s %s a named list — every element needs a name, because an unnamed ",
+      "list is a JSON array and app data holds one JSON object"), what, verb),
       hint = "name every element: list(a = 1, b = 2)"))
   }
   if (has_non_finite(value)) {
@@ -117,8 +121,8 @@ as_document <- function(value, what) {
     # and "Inf", and the document read back would hold text where a number
     # was — data changed without an error. Python and Go refuse the same.
     stop(toft_refusal("bad_request", sprintf(paste0(
-      "%s was given NaN or Inf, which JSON cannot hold — the document would ",
-      "read back with a string in its place"), what),
+      "%s %s NaN or Inf, which JSON cannot hold — the document would ",
+      "read back with a string in its place"), what, if (returns) "returned" else "was given"),
       hint = "replace NaN and Inf with NULL or a number before writing"))
   }
   value
@@ -174,7 +178,7 @@ app_data_update <- function(fn, attempts = 5L) {
     # Checked here, under this call's own name: app_data_set() would refuse
     # the same value naming itself, a call the app never made.
     value <- as_document(fn(if (is.null(cur$data)) list() else cur$data),
-                         "the function given to app_data_update()")
+                         "the function given to app_data_update()", returns = TRUE)
     written <- tryCatch(
       app_data_set(value, if_version = cur$version),
       toft_error = function(e) {
@@ -185,5 +189,6 @@ app_data_update <- function(fn, attempts = 5L) {
     if (!is.null(written)) return(invisible(written))
   }
   stop(toft_refusal("version_conflict", sprintf(
-    "the document kept changing under %d attempts; another writer is updating it constantly", attempts)))
+    "the document kept changing under %d attempts; another writer is updating it constantly", attempts),
+    hint = "call app_data_update() again later, or pass a larger attempts"))
 }

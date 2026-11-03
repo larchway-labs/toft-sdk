@@ -131,7 +131,7 @@ func (n NotifyClient) Slack(ctx context.Context, text string) (Send, error) {
 // SlackWithKey is [NotifyClient.Slack] with an idempotency key of the caller's
 // choosing.
 func (NotifyClient) SlackWithKey(ctx context.Context, text, idempotencyKey string) (Send, error) {
-	if err := requireText(text, "slack"); err != nil {
+	if err := requireText(text, "slack text"); err != nil {
 		return Send{}, err
 	}
 	t, err := client()
@@ -300,7 +300,7 @@ func (NotifyClient) Email(ctx context.Context, message EmailMessage) (Send, erro
 // content it wrote, tells it nothing it did not know.
 func (NotifyClient) Status(ctx context.Context, sendID string) (Send, error) {
 	if sendID == "" {
-		return Send{}, &Error{Body: refusal("bad_request"), Message: "Status needs the id of a send"}
+		return Send{}, &Error{Body: refusal("bad_request", "pass the ID of a Send that Slack, Send or Email returned"), Message: "Status needs the id of a send"}
 	}
 	t, err := client()
 	if err != nil {
@@ -315,7 +315,7 @@ func (NotifyClient) Status(ctx context.Context, sendID string) (Send, error) {
 
 func requireText(value, what string) error {
 	if strings.TrimSpace(value) == "" {
-		return &Error{Body: refusal("bad_request"), Message: fmt.Sprintf("%s needs some text", what)}
+		return &Error{Body: refusal("bad_request", "the "+what+" was blank or only whitespace — pass some text"), Message: fmt.Sprintf("%s needs some text", what)}
 	}
 	return nil
 }

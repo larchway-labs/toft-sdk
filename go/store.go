@@ -83,6 +83,9 @@ func (m Mount) Upload(ctx context.Context, source, name string) (string, error) 
 	if err := m.checkMapped(); err != nil {
 		return "", err
 	}
+	if err := m.checkIsStore(); err != nil {
+		return "", err
+	}
 	target := name
 	if target == "" {
 		target = filepath.Base(source)
@@ -231,11 +234,8 @@ func (m Mount) storeRoute(route, name string, query map[string]string) (string, 
 	if err := m.checkMapped(); err != nil {
 		return "", err
 	}
-	if m.Kind != "" && m.Kind != "store" {
-		hint := fmt.Sprintf("use the path toft.Storage(%q) resolves, with the ordinary os and filepath calls", m.Name)
-		return "", &Error{Body: refusal("not_a_store", hint), Message: fmt.Sprintf(
-			"%q is a %s, which is reached at its path — only an object store is reached "+
-				"over signed URLs", m.Name, m.Kind)}
+	if err := m.checkIsStore(); err != nil {
+		return "", err
 	}
 	params := url.Values{"folder": {m.Folder}}
 	for k, v := range query {
@@ -246,6 +246,18 @@ func (m Mount) storeRoute(route, name string, query map[string]string) (string, 
 	route = strings.Replace(route, "{slug}", url.PathEscape(m.Name), 1)
 	route = strings.Replace(route, "{name}", escapeName(name), 1)
 	return route + "?" + params.Encode(), nil
+}
+
+// checkIsStore refuses a volume — which is what [Store] returns beside its
+// not_a_store error — with that same not_a_store, before any file is read.
+func (m Mount) checkIsStore() error {
+	if m.Kind == "" || m.Kind == "store" {
+		return nil
+	}
+	hint := fmt.Sprintf("use the path toft.Storage(%q) resolves, with the ordinary os and filepath calls", m.Name)
+	return &Error{Body: refusal("not_a_store", hint), Message: fmt.Sprintf(
+		"%q is a %s, which is reached at its path — only an object store is reached "+
+			"over signed URLs", m.Name, m.Kind)}
 }
 
 // checkMapped refuses a Mount that names no resource — the zero Mount that

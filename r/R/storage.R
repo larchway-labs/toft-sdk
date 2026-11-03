@@ -20,8 +20,10 @@
 #' deliberately not an error, because "this app has no durable storage" is a
 #' normal state app code can branch on.
 #'
-#' @return A list of mounts, each a list of `name`, `kind`, `path`, `access`
-#'   and `folder`. `folder` is `""` for the whole resource.
+#' @return A list of mounts, each a list of `name`, `kind`, `path`, `access`,
+#'   `folder`, `read_only` and `mounted`. `folder` is `""` for the whole
+#'   resource; `mounted` is FALSE for a store reached over signed URLs alone.
+#'   An entry missing its name, kind or access is refused `storage_env_invalid`.
 #' @export
 mounts <- function() {
   raw <- trimws(Sys.getenv(ENV_STORAGE, ""))
@@ -35,19 +37,59 @@ mounts <- function() {
                         sprintf("%s is not valid JSON: %s", ENV_STORAGE, conditionMessage(e))))
     }
   )
+  if (!is.list(parsed) || (length(parsed) > 0 && !is.null(names(parsed)))) {
+    stop(toft_refusal("storage_env_invalid",
+                      sprintf("%s should be a JSON array of mounts", ENV_STORAGE),
+                      hint = STORAGE_ENV_HINT))
+  }
   lapply(parsed, function(entry) {
+    check_mount_entry(entry)
+    path <- or_empty(entry[["path"]])
+    access <- or_empty(entry[["access"]])
     list(
       name = or_empty(entry[["name"]]),
       kind = or_empty(entry[["kind"]]),
-      path = or_empty(entry[["path"]]),
-      access = or_empty(entry[["access"]]),
+      path = path,
+      access = access,
       # Which directory of the resource this mount is rooted at, and "" is the
       # whole resource. It is here because **two mounts of one resource share a
       # name**, and the name is how app code locates a resource — so this is
       # what tells them apart.
-      folder = or_empty(entry[["folder"]])
+      folder = or_empty(entry[["folder"]]),
+      # The two the other SDKs derive, so a mounts() entry has the documented
+      # fields in every language: read-only at `read`, and mounted where there
+      # is a path — a store reached over signed URLs alone has none.
+      read_only = identical(access, "read"),
+      mounted = nzchar(path)
     )
   })
+}
+
+STORAGE_ENV_HINT <- paste0(
+  "each TOFT_STORAGE entry names its name, kind (volume or store), path and access; ",
+  "the platform writes it, and a local stand-in needs the same keys")
+
+# The platform writes every entry with a name, a kind and an access level (and
+# a path, "" for a store reached over signed URLs). An entry missing one is a
+# hand-written stand-in that would resolve to a mount with no kind — which
+# store() then takes for a store and storage() for a volume — so it is refused
+# here, as Python and Go refuse it, rather than read as empty strings.
+check_mount_entry <- function(entry) {
+  if (!is.list(entry) || is.null(names(entry))) {
+    stop(toft_refusal("storage_env_invalid",
+                      sprintf("every %s entry is a JSON object", ENV_STORAGE),
+                      hint = STORAGE_ENV_HINT))
+  }
+  for (key in c("name", "kind", "access")) {
+    value <- entry[[key]]
+    if (!is.character(value) || length(value) != 1 || is.na(value) || !nzchar(value)) {
+      stop(toft_refusal("storage_env_invalid", sprintf(
+        "a %s entry has no %s: %s", ENV_STORAGE, key,
+        as.character(jsonlite::toJSON(entry, auto_unbox = TRUE, null = "null"))),
+        hint = STORAGE_ENV_HINT))
+    }
+  }
+  invisible(TRUE)
 }
 
 #' Where a mount is, or a refusal when it is not mounted
@@ -109,6 +151,7 @@ resolve_mount <- function(name, folder, accessor) {
     stop(toft_refusal("invalid_name", paste0(accessor, "() needs the name an administrator gave the resource"),
                       hint = "pass one of the names mounts() lists"))
   }
+  if (!is.null(folder)) check_folder(folder, accessor)
   available <- mounts()
   named <- Filter(function(m) identical(m$name, name), available)
 
@@ -503,6 +546,27 @@ check_relative_name <- function(name) {
     if (!nzchar(segment) || identical(segment, ".") || identical(segment, "..")) {
       stop(toft_refusal("invalid_name", sprintf("a name must not contain '%s' segments, got '%s'", segment, name), hint = NAME_HINT))
     }
+  }
+  invisible(TRUE)
+}
+
+# A folder names a directory inside the resource, so it is held to the rule an
+# object's name is: relative, forward slashes, no '.' or '..' segments. ""
+# names the root. Without this, storage("x", "..") was not_mapped — "mounted,
+# but not at folder '..'" — a lookup failing where the argument was the fault.
+check_folder <- function(folder, accessor) {
+  hint <- sprintf("name a folder of the resource, like %s('drop', folder = 'backup'), or '' for its root", accessor)
+  if (!is.character(folder) || length(folder) != 1 || is.na(folder)) {
+    stop(toft_refusal("invalid_name", sprintf(
+      "%s()'s folder is one string, got %s", accessor, deparse(folder)), hint = hint))
+  }
+  if (!nzchar(folder)) return(invisible(TRUE))
+  bad <- startsWith(folder, "/") || endsWith(folder, "/") || grepl("\\", folder, fixed = TRUE) ||
+    any(strsplit(folder, "/", fixed = TRUE)[[1]] %in% c("", ".", ".."))
+  if (bad) {
+    stop(toft_refusal("invalid_name", sprintf(
+      "a folder is a relative path inside the resource, with forward slashes and no '.' or '..' segments, got '%s'",
+      folder), hint = hint))
   }
   invisible(TRUE)
 }

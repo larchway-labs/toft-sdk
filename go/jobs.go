@@ -155,6 +155,29 @@ type JobRun struct {
 	requestDeadline time.Time
 }
 
+// MarshalJSON writes rerun_of, scheduled_for, deadline, exit_code and
+// failure_reason as null when empty rather than leaving them out, as the run
+// objects of the other three SDKs do — so Respond's 202 body and
+// json.Marshal(run) carry the same keys a reader of any SDK's run expects.
+func (r JobRun) MarshalJSON() ([]byte, error) {
+	type plain JobRun
+	out := struct {
+		plain
+		RerunOf       *string    `json:"rerun_of"`
+		ScheduledFor  *time.Time `json:"scheduled_for"`
+		Deadline      *time.Time `json:"deadline"`
+		ExitCode      *int       `json:"exit_code"`
+		FailureReason *string    `json:"failure_reason"`
+	}{plain: plain(r), ScheduledFor: r.ScheduledFor, Deadline: r.Deadline, ExitCode: r.ExitCode}
+	if r.RerunOf != "" {
+		out.RerunOf = &r.RerunOf
+	}
+	if r.FailureReason != "" {
+		out.FailureReason = &r.FailureReason
+	}
+	return json.Marshal(out)
+}
+
 // Done reports whether this run will change again.
 func (r JobRun) Done() bool { return r.Status != "" && r.Status != RunQueued && r.Status != RunRunning }
 
@@ -236,7 +259,8 @@ func (r JobRun) Wait(ctx context.Context, opts WaitOptions) (JobRun, error) {
 	// Named, so a caller can branch on it: a deadline is the run still going,
 	// and waiting again is a fair answer — hence retryable.
 	cutShort := func() error {
-		body := map[string]any{"code": "wait_timeout", "retryable": true}
+		body := map[string]any{"code": "wait_timeout", "retryable": true,
+			"hint": "the run is still going — wait again, or answer the request with toft.Jobs.Respond(w, r, run) and let the status page follow it"}
 		if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			body = refusal("wait_cancelled")
 		}
@@ -565,6 +589,10 @@ func (j *JobsClient) Start(ctx context.Context, job string, opts StartOptions) (
 	var body any
 	if len(opts.Params) > 0 {
 		body = map[string]any{"params": opts.Params}
+		// bad_request before off_platform, as Data.Set does.
+		if _, err := json.Marshal(body); err != nil {
+			return JobRun{}, encodeError(err)
+		}
 	}
 	t, err := client()
 	if err != nil {

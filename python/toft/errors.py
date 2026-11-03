@@ -112,8 +112,29 @@ def store_refused(code: str, message: str, status: int) -> ToftError:
     throttle or a server error. A 403 used to come back code ``""`` and not
     retryable, the one combination the contract says never happens.
     """
+    retryable = status == 429 or status >= 500
     return ToftError(message, status=status,
-                     body={"code": code, "retryable": status == 429 or status >= 500})
+                     body={"code": code, "retryable": retryable,
+                           "hint": _store_hint(code, retryable)})
+
+
+# The next step for each object-store refusal, which the store itself never
+# says: its answer is XML for a URL the platform minted, not Toft's envelope.
+_STORE_HINTS = {
+    "output_unwritable": "the run's output location is signed for this run and expires with it — "
+                         "write the output before the run ends, and put anything large in the "
+                         "app's storage with the output naming it",
+    "output_unreadable": "read the output again; the signed link it is fetched through lasts "
+                         "minutes, so a stale one is refused",
+    "store_refused": "check the object's name and the app's access level on the store; a signed "
+                     "URL lasts fifteen minutes, so ask for a fresh one",
+}
+
+
+def _store_hint(code: str, retryable: bool) -> str:
+    if retryable:
+        return "the object store is throttling or failing — try again shortly"
+    return _STORE_HINTS.get(code, "ask for a fresh signed URL and try again")
 
 
 def bad_request(message: str, hint: str | None = None) -> ToftError:

@@ -177,11 +177,30 @@ func localWriteError(path string, err error) error {
 // a server error. A 403 used to come back code "" and not retryable, the one
 // combination the contract says never happens.
 func objectStoreRefusal(code, message string, status int) *Error {
+	retryable := status == http.StatusTooManyRequests || status >= 500
 	return &Error{
-		Body:    map[string]any{"code": code, "retryable": status == http.StatusTooManyRequests || status >= 500},
+		Body:    map[string]any{"code": code, "retryable": retryable, "hint": objectStoreHint(code, retryable)},
 		Message: message,
 		Status:  status,
 	}
+}
+
+// objectStoreHint is the next step for each object-store refusal, which the
+// store itself never says: its answer is XML for a URL the platform minted,
+// not Toft's envelope.
+func objectStoreHint(code string, retryable bool) string {
+	if retryable {
+		return "the object store is throttling or failing — try again shortly"
+	}
+	switch code {
+	case "output_unwritable":
+		return "the run's output location is signed for this run and expires with it — write the output before the run ends, and put anything large in the app's storage with the output naming it"
+	case "output_unreadable":
+		return "read the output again; the signed link it is fetched through lasts minutes, so a stale one is refused"
+	case "store_refused":
+		return "check the object's name and the app's access level on the store; a signed URL lasts fifteen minutes, so ask for a fresh one"
+	}
+	return "ask for a fresh signed URL and try again"
 }
 
 // encodeError is a value of the caller's that encoding/json cannot encode — a

@@ -25,17 +25,32 @@ import (
 // to their administrator to ask a question the process could already answer.
 
 // Mount is one storage resource mapped to this app.
+//
+// Encoded, it carries the documented fields of a mounts() entry in every SDK —
+// name, kind, path, access, folder, read_only and mounted — the last two
+// derived, as [Mount.ReadOnly] and [Mount.Mounted] derive them.
 type Mount struct {
-	Name   string
-	Kind   string
-	Path   string
-	Access string
+	Name   string `json:"name"`
+	Kind   string `json:"kind"`
+	Path   string `json:"path"`
+	Access string `json:"access"`
 	// Folder is which directory of the resource this mount is rooted at, and
 	// "" is the whole resource. It is here because **two mounts of one resource
 	// share a name**, and the name is how app code locates a resource — so this
 	// is what tells them apart. Deliberately not part of Path: where a mount
 	// appears stays the administrator's choice.
-	Folder string
+	Folder string `json:"folder"`
+}
+
+// MarshalJSON adds read_only and mounted to the stored fields, so an encoded
+// Mount reads as the mounts() entry of the other three SDKs.
+func (m Mount) MarshalJSON() ([]byte, error) {
+	type plain Mount
+	return json.Marshal(struct {
+		plain
+		ReadOnly bool `json:"read_only"`
+		Mounted  bool `json:"mounted"`
+	}{plain(m), m.ReadOnly(), m.Mounted()})
 }
 
 // ReadOnly reports whether an administrator mapped this resource read-only.
@@ -163,9 +178,45 @@ func Mounts() ([]Mount, error) {
 	}
 	out := make([]Mount, 0, len(entries))
 	for _, entry := range entries {
+		// The platform writes every entry with a name, a kind and an access
+		// level (and a path, "" for a store reached over signed URLs). An entry
+		// missing one is a hand-written stand-in that would resolve to a mount
+		// with no kind — which Store takes for a store and Storage for a volume —
+		// so it is refused rather than read as empty strings.
+		for _, field := range [][2]string{{"name", entry.Name}, {"kind", entry.Kind}, {"access", entry.Access}} {
+			if key, value := field[0], field[1]; strings.TrimSpace(value) == "" {
+				encoded, _ := json.Marshal(entry)
+				return nil, &Error{Body: refusal("storage_env_invalid", storageEnvHint),
+					Message: fmt.Sprintf("a %s entry has no %s: %s", EnvStorage, key, encoded)}
+			}
+		}
 		out = append(out, Mount(entry))
 	}
 	return out, nil
+}
+
+const storageEnvHint = "each TOFT_STORAGE entry names its name, kind (volume or store), path and access; " +
+	"the platform writes it, and a local stand-in needs the same keys"
+
+// checkFolder holds a folder to the rule an object's name is held to —
+// relative, forward slashes, no "." or ".." segments — with "" naming the root.
+// Without it StorageIn("x", "..") was not_mapped, "mounted, but not at folder",
+// a lookup failing where the argument was the fault.
+func checkFolder(folder, accessor string) error {
+	if folder == "" {
+		return nil
+	}
+	bad := strings.HasPrefix(folder, "/") || strings.HasSuffix(folder, "/") || strings.Contains(folder, `\`)
+	for _, segment := range strings.Split(folder, "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			bad = true
+		}
+	}
+	if !bad {
+		return nil
+	}
+	return &Error{Body: refusal("invalid_name", fmt.Sprintf(`name a folder of the resource, like toft.%sIn("drop", "backup"), or "" for its root`, accessor)),
+		Message: fmt.Sprintf("a folder is a relative path inside the resource, with forward slashes and no '.' or '..' segments, got %q", folder)}
 }
 
 // Storage resolves one resource by the name an administrator gave it.
@@ -195,6 +246,11 @@ func StorageIn(name, folder string) (Mount, error) { return storageIn(name, &fol
 func storageIn(name string, folder *string, accessor string) (Mount, error) {
 	if name == "" {
 		return Mount{}, &Error{Body: refusal("invalid_name", "pass one of the names toft.Mounts() lists"), Message: accessor + " needs the name an administrator gave the resource"}
+	}
+	if folder != nil {
+		if err := checkFolder(*folder, accessor); err != nil {
+			return Mount{}, err
+		}
 	}
 	available, err := Mounts()
 	if err != nil {
@@ -296,7 +352,7 @@ func checkStore(name string, mount Mount, err error) (Mount, error) {
 	}
 	if mount.Kind != "" && mount.Kind != "store" {
 		hint := fmt.Sprintf("use the path toft.Storage(%q) resolves, with the ordinary os and filepath calls", name)
-		return Mount{}, &Error{Body: refusal("not_a_store", hint), Message: fmt.Sprintf(
+		return mount, &Error{Body: refusal("not_a_store", hint), Message: fmt.Sprintf(
 			"%q is a %s, not a store. A volume is a real filesystem — write to the path "+
 				"toft.Storage(%q) resolves, with the ordinary os and filepath calls.",
 			name, mount.Kind, name)}

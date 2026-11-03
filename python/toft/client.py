@@ -125,6 +125,11 @@ class Run:
         #: history, which does not move.
         self.trigger_role = os.environ.get("TOFT_TRIGGER_ROLE") or ROLE_UNKNOWN
 
+    def __repr__(self) -> str:
+        # Never the job token or the presigned output URL: a run printed into
+        # a job's log is read by anyone who can read the app's runs.
+        return f"Run(id={self.id!r}, job={self.job!r}, trigger={self.trigger}/{self.trigger_role})"
+
     @classmethod
     def from_env(cls) -> "Run":
         base_url = os.environ.get("TOFT_API_URL")

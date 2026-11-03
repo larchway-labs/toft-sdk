@@ -444,6 +444,7 @@ job_wait <- function(run, timeout = NULL, request = NULL, poll = WAIT_POLL_SECON
         as.numeric(difftime(Sys.time(), started, units = "secs")) + poll > timeout) {
       stop(toft_refusal("wait_timeout", sprintf(
         "run %s was still %s when the wait was cut short", run$id, current$status),
+        hint = "the run is still going - wait again, or answer the request with job_respond(run) and let the status page follow it",
         retryable = TRUE))
     }
     Sys.sleep(poll)

@@ -187,6 +187,12 @@ func (DataClient) write(ctx context.Context, document map[string]any, ifVersion 
 			"empty map to store an empty document, or call Clear to put the app back to " +
 			"never having one"}
 	}
+	// Encoded before client() can refuse off_platform: a value no request could
+	// carry — NaN, an infinity, a channel — is bad_request on a laptop as it is
+	// on the platform, not a complaint about the laptop.
+	if _, err := json.Marshal(document); err != nil {
+		return Document{}, encodeError(err)
+	}
 	t, err := client()
 	if err != nil {
 		return Document{}, err
@@ -391,6 +397,17 @@ func typedConflict(err error) error {
 	version := 0
 	if raw, ok := platform.Body["version"].(float64); ok {
 		version = int(raw)
+	}
+	// The platform's 412 names the version stored but no next step, and the
+	// step is this SDK's to name.
+	if platform.Hint() == "" {
+		withHint := *platform
+		withHint.Body = make(map[string]any, len(platform.Body)+1)
+		for k, v := range platform.Body {
+			withHint.Body[k] = v
+		}
+		withHint.Body["hint"] = "read the document again and reapply the change to it, or use toft.Data.Update, which does that on every conflict"
+		platform = &withHint
 	}
 	return &VersionConflictError{Err: platform, Version: version}
 }

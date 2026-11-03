@@ -134,7 +134,7 @@ def encode_json(body: Any) -> bytes:
     except (TypeError, ValueError) as exc:
         raise bad_request(
             f"the request body is not JSON-serializable: {exc}",
-            hint="send only dicts, lists, strings, numbers, booleans and None") from None
+            hint="send only dicts, lists, strings, finite numbers, booleans and None; replace NaN and infinities with None or a number") from None
 
 
 def encode_multipart(fields: Mapping[str, str], parts: Iterable[Part]) -> tuple[bytes, str]:

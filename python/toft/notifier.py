@@ -48,7 +48,7 @@ from urllib.parse import quote
 
 from .errors import ToftError, bad_request
 from .session import transport
-from .transport import Part
+from .transport import Part, encode_json
 
 SLACK_PATH = "/api/v1/app/notify/slack"
 SLACK_FILE_PATH = "/api/v1/app/notify/slack/file"
@@ -161,7 +161,7 @@ class Notify:
                 "email takes recipients and a subject — use toft.notify.email(to=…, subject=…, text=…)",
                 hint="use toft.notify.email(to=…, subject=…, text=…)",
             )
-        body: dict[str, Any] = {"text": _require_text(text, name)}
+        body: dict[str, Any] = {"text": _require_text(text, f"{name} text")}
         if title:
             body["title"] = title
         if severity:
@@ -172,6 +172,7 @@ class Notify:
         # PagerDuty's trigger and resolve are the pair that exists.
         if action:
             body["action"] = action
+        encode_json(body)  # bad_request before off_platform, as data.set does
         raw = transport().post_json(_notify_path(name), body, idempotency_key)
         return Send.from_raw(raw)
 
@@ -277,7 +278,7 @@ class Notify:
         key would be quietly deduplicating an app that meant to post twice.
         Pass one for a message whose duplicate would matter.
         """
-        text = _require_text(text, "slack")
+        text = _require_text(text, "slack text")
         raw = transport().post_json(SLACK_PATH, {"text": text}, idempotency_key)
         return Send.from_raw(raw)
 
@@ -408,14 +409,18 @@ class Notify:
         """
         send_id = send.id if isinstance(send, Send) else str(send)
         if not send_id:
-            raise ToftError("status() needs the id of a send", body={"code": "bad_request", "retryable": False})
+            raise ToftError("status() needs the id of a send", body={
+                "code": "bad_request", "retryable": False,
+                "hint": "pass the id of a send that slack(), send() or email() returned"})
         raw = transport().get(f"{SENDS_PATH}/{quote(send_id, safe='')}")
         return Send.from_raw(raw)
 
 
 def _require_text(value: str, what: str) -> str:
     if not isinstance(value, str) or not value.strip():
-        raise ToftError(f"{what} needs some text", body={"code": "bad_request", "retryable": False})
+        raise ToftError(f"{what} needs some text", body={
+            "code": "bad_request", "retryable": False,
+            "hint": f"the {what} was blank or only whitespace — pass some text"})
     return value
 
 
@@ -434,7 +439,8 @@ def _addresses(value: str | Sequence[str], field_name: str) -> list[str]:
     for v in items:
         if not isinstance(v, str):
             raise bad_request(
-                f"'{field_name}' holds addresses as text, got {type(v).__name__}")
+                f"'{field_name}' holds addresses as text, got {type(v).__name__}",
+                hint=f"pass each address as a string, like {field_name}=[\"someone@example.com\"]")
     out = [str(v).strip() for v in items if str(v).strip()]
     if items and not out:
         raise ToftError(f"'{field_name}' held only blank addresses", body={

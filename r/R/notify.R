@@ -49,7 +49,8 @@ notify <- function(kind, ..., idempotency_key = NULL) {
     }
     for (f in c("subject", "text")) {
       if (!is_text(body[[f]])) {
-        stop(toft_refusal("bad_request", sprintf("email %s needs some text", f)))
+        stop(toft_refusal("bad_request", sprintf("email %s needs some text", f),
+                          hint = sprintf("the email %s was blank or only whitespace - pass some text", f)))
       }
     }
   } else if (kind %in% c("slack", "teams") && !("text" %in% names(body))) {

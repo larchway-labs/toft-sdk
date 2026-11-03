@@ -204,9 +204,27 @@ toft_refusal <- function(code, message, hint = NULL, retryable = FALSE) {
 # status beside it, and retryable only for what the status rule calls a blip (a
 # throttle, a server error). The other three SDKs raise the same code.
 store_refusal <- function(code, message, status) {
-  e <- toft_refusal(code, message, retryable = status == 429 || status >= 500)
+  retryable <- status == 429 || status >= 500
+  e <- toft_refusal(code, message, retryable = retryable, hint = store_hint(code, retryable))
   e$status <- as.integer(status)
   e
+}
+
+# The next step for each object-store refusal, which the store itself never
+# says: its answer is XML for a URL the platform minted, not Toft's envelope.
+store_hint <- function(code, retryable) {
+  if (retryable) {
+    return("the object store is throttling or failing - try again shortly")
+  }
+  switch(code,
+    output_unwritable = paste0("the run's output location is signed for this run and expires with it - ",
+                               "write the output before the run ends, and put anything large in the ",
+                               "app's storage with the output naming it"),
+    output_unreadable = paste0("read the output again; the signed link it is fetched through lasts ",
+                               "minutes, so a stale one is refused"),
+    store_refused = paste0("check the object's name and the app's access level on the store; a signed ",
+                           "URL lasts fifteen minutes, so ask for a fresh one"),
+    "ask for a fresh signed URL and try again")
 }
 
 toft_error <- function(method, path, resp, text) {

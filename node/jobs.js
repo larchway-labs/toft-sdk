@@ -119,7 +119,8 @@ export const MAX_LIST_LIMIT = 200;
 // called  ", neither of which names the mistake.
 function requireName(value, what) {
   if (typeof value !== "string" || !value.trim()) {
-    throw refusal("bad_request", `${what} needs a non-empty name, got ${JSON.stringify(value) ?? String(value)}`);
+    throw refusal("bad_request", `${what} needs a non-empty name, got ${JSON.stringify(value) ?? String(value)}`,
+      { hint: "pass the job's name as toft.toml declares it under [jobs.<name>], or a run's id" });
   }
   return value;
 }
@@ -137,6 +138,10 @@ export const RUN_STATUSES = new FrozenSet(["queued", "running", ...TERMINAL]);
 const RUN_STATUS_CHECK = new Set(["queued", "running", ...TERMINAL]);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// The run is still going: waiting again is a fair answer, and so is not waiting.
+const WAIT_TIMEOUT_HINT =
+  "the run is still going — call wait() again with a longer timeoutMs, or read it later with jobs.get(run.id)";
 
 // How long a polling loop sleeps after a rate_limited refusal: what
 // Retry-After asked, else one poll interval — never past the wait's deadline.
@@ -229,9 +234,27 @@ export class JobRun {
     Object.defineProperty(this, "_requestDeadline", { value: requestDeadline, enumerable: false });
   }
 
-  /** The run as the platform sent it — what `respond` answers with. */
+  /**
+   * The run as the platform sent it — what `respond` answers with — with
+   * `rerun_of`, `scheduled_for` and `failure_reason` present as null when
+   * empty, as the run object is documented in every SDK: a key that is
+   * sometimes absent is a key a client has to guess about.
+   */
   toJSON() {
-    return Object.keys(this.raw).length ? this.raw : { id: this.id, job: this.job, status: this.status };
+    const base = Object.keys(this.raw).length ? { ...this.raw } : { id: this.id, job: this.job, status: this.status };
+    base.rerun_of = this.rerunOf;
+    base.scheduled_for = this.scheduledFor;
+    base.failure_reason = this.failureReason;
+    return base;
+  }
+
+  /**
+   * The instant this run is for as the platform sent it, zone offset
+   * included — the same text as `scheduledFor`, under the name `toft.run`
+   * uses, so code reading either gets the text rather than a Date.
+   */
+  get scheduledForText() {
+    return this.scheduledFor;
   }
 
   /** Whether this run will change again. */
@@ -292,7 +315,7 @@ export class JobRun {
         if (deadline !== undefined && Date.now() >= deadline) {
           throw new ToftError(
             `run ${this.id} was still ${current.status} after ${timeoutMs}ms`,
-            { body: { code: "wait_timeout", retryable: true } },
+            { body: { code: "wait_timeout", retryable: true, hint: WAIT_TIMEOUT_HINT } },
           );
         }
         await sleep(backoffMs(err, pollIntervalMs, deadline));
@@ -304,7 +327,7 @@ export class JobRun {
         // waiting again is a fair answer — hence retryable.
         throw new ToftError(
           `run ${this.id} was still ${current.status} after ${timeoutMs}ms`,
-          { body: { code: "wait_timeout", retryable: true } },
+          { body: { code: "wait_timeout", retryable: true, hint: WAIT_TIMEOUT_HINT } },
         );
       }
       await sleep(pollIntervalMs);

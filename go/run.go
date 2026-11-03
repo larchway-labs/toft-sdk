@@ -123,6 +123,41 @@ func CurrentRun() *Run {
 	}
 }
 
+// String names the run without its secrets. fmt prints a struct's unexported
+// fields under %v and %+v, so without it logging a *Run printed the job token
+// and the presigned output URL, credentials and all, into job logs anyone who
+// can read the app's runs can read.
+func (r Run) String() string {
+	return "Run(" + r.ID + ", job " + r.Job + ", trigger " + r.Trigger + "/" + r.TriggerRole + ")"
+}
+
+// GoString is %#v's form, redacted the same way.
+func (r Run) GoString() string { return r.String() }
+
+// MarshalJSON encodes the run without its token or presigned output URL, so
+// json.Marshal(run) — and slog's JSON handler — is safe to log. output_uri is
+// present as "[redacted]" where the run has one, so the encoded form still says
+// that it does.
+func (r Run) MarshalJSON() ([]byte, error) {
+	out := struct {
+		ID          string  `json:"id"`
+		Job         string  `json:"job"`
+		RerunOf     *string `json:"rerun_of"`
+		Trigger     string  `json:"trigger"`
+		TriggerRole string  `json:"trigger_role"`
+		OutputURI   *string `json:"output_uri"`
+	}{ID: r.ID, Job: r.Job, Trigger: r.Trigger, TriggerRole: r.TriggerRole}
+	if r.RerunOf != "" {
+		rerunOf := r.RerunOf
+		out.RerunOf = &rerunOf
+	}
+	if r.OutputURI != "" {
+		redacted := "[redacted]"
+		out.OutputURI = &redacted
+	}
+	return json.Marshal(out)
+}
+
 // Params unmarshals the parameters this run was started with into value.
 //
 // They arrive typed — declared defaults applied, an int an int — so a struct of

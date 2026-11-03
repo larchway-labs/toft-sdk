@@ -360,6 +360,17 @@ def mounts() -> list[Mount]:
     for entry in parsed:
         if not isinstance(entry, dict):
             continue
+        # The platform writes every entry with a name, a kind and an access
+        # level (and a path, "" for a store reached over signed URLs). An entry
+        # missing one is a hand-written stand-in that would resolve to a mount
+        # with no kind — which store() takes for a store and storage() for a
+        # volume — so it is refused rather than read as empty strings.
+        for key in ("name", "kind", "access"):
+            value = entry.get(key)
+            if not isinstance(value, str) or not value.strip():
+                raise _refused("storage_env_invalid",
+                               f"a {ENV_STORAGE} entry has no {key}: {json.dumps(entry)}",
+                               hint=_STORAGE_ENV_HINT)
         out.append(
             Mount(
                 name=str(entry.get("name", "")),
@@ -395,6 +406,27 @@ def storage(name: str, folder: str | None = None) -> Mount:
     return _resolve(name, folder, "storage")
 
 
+_STORAGE_ENV_HINT = ("each TOFT_STORAGE entry names its name, kind (volume or store), path and "
+                     "access; the platform writes it, and a local stand-in needs the same keys")
+
+
+def _check_folder(folder: Any, accessor: str) -> None:
+    """Hold a folder to the rule an object's name is held to — relative, forward
+    slashes, no ``.`` or ``..`` segments — with ``""`` naming the root. Without
+    it ``storage("x", folder="..")`` was not_mapped, "mounted, but not at
+    folder", a lookup failing where the argument was the fault."""
+    hint = f"name a folder of the resource, like toft.{accessor}(\"drop\", folder=\"backup\"), or \"\" for its root"
+    if not isinstance(folder, str):
+        raise _refused("invalid_name", f"{accessor}()'s folder is a string, got {type(folder).__name__}", hint=hint)
+    if not folder:
+        return
+    if (folder.startswith("/") or folder.endswith("/") or "\\" in folder
+            or any(seg in ("", ".", "..") for seg in folder.split("/"))):
+        raise _refused("invalid_name",
+                       "a folder is a relative path inside the resource, with forward slashes and "
+                       f"no '.' or '..' segments, got {folder!r}", hint=hint)
+
+
 def _resolve(name: str, folder: str | None, accessor: str) -> Mount:
     """:func:`storage`'s body, with the accessor the caller used — ``storage``
     or ``store`` — so a refusal names the call to make rather than the other
@@ -402,6 +434,8 @@ def _resolve(name: str, folder: str | None, accessor: str) -> Mount:
     if not name:
         raise _refused("invalid_name", f"{accessor}() needs the name an administrator gave the resource",
                        hint="pass one of the names toft.mounts() lists")
+    if folder is not None:
+        _check_folder(folder, accessor)
     available = mounts()
     named = [m for m in available if m.name == name]
 

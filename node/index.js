@@ -84,6 +84,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { lstatSync, mkdirSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { inspect } from "node:util";
 
 import { App, Mount, mounts, storage, store } from "./app.js";
 import {
@@ -201,8 +202,13 @@ async function runnerRequest(baseUrl, token, method, path, body, timeoutMs = DEF
  */
 export class Run {
   constructor({ baseUrl, token, id } = {}) {
-    this._baseUrl = baseUrl ?? process.env.TOFT_API_URL;
-    this._token = token ?? process.env.TOFT_JOB_TOKEN;
+    // Not enumerable, as the access token's value is not: the job token is a
+    // bearer credential and the output URL a presigned one carrying signed
+    // object-store credentials, and `console.log(toft.run)` lands in a job
+    // log anyone who can run `toft job logs` reads. toJSON and the inspect
+    // form below say what there is without either.
+    Object.defineProperty(this, "_baseUrl", { value: baseUrl ?? process.env.TOFT_API_URL, enumerable: false });
+    Object.defineProperty(this, "_token", { value: token ?? process.env.TOFT_JOB_TOKEN, enumerable: false });
     this.id = id ?? process.env.TOFT_RUN_ID;
     /** The job this run is of — its `[jobs.<name>]` in `toft.toml`. */
     this.job = process.env.TOFT_JOB_NAME ?? "";
@@ -211,7 +217,10 @@ export class Run {
      * that must not repeat a side effect checks this.
      */
     this.rerunOf = process.env.TOFT_RERUN_OF || null;
-    this.outputUri = process.env.TOFT_OUTPUT_URI ?? "";
+    /** The presigned URL `writeOutput` PUTs to. A credential: never log it. */
+    Object.defineProperty(this, "outputUri", {
+      value: process.env.TOFT_OUTPUT_URI ?? "", enumerable: false, writable: true,
+    });
     /**
      * `trigger` is *how* this run started — `app`, `viewer`, `cli`, `schedule`
      * or `ui`, the run's `startedBy`. `triggerRole` is *who* — one of the ROLE_*
@@ -236,13 +245,43 @@ export class Run {
       throw new ToftError(
         "not running inside a Toft job — TOFT_API_URL, TOFT_JOB_TOKEN " +
           "and TOFT_RUN_ID are set by the runner",
-        { offPlatform: true, body: { code: "off_platform", retryable: false } },
+        {
+          offPlatform: true,
+          body: {
+            code: "off_platform",
+            retryable: false,
+            hint: "read toft.run, which is null outside a job, rather than constructing a Run",
+          },
+        },
       );
     }
   }
 
   static fromEnv() {
     return new Run();
+  }
+
+  /**
+   * The run's facts, with no credential: neither the job token nor the
+   * output URL, only whether there is somewhere to write output.
+   */
+  toJSON() {
+    return {
+      id: this.id,
+      job: this.job,
+      started_by: this.trigger,
+      trigger_role: this.triggerRole,
+      rerun_of: this.rerunOf,
+      params: this.params,
+      scheduled_for: this.scheduledForText,
+      deadline: process.env.TOFT_DEADLINE || null,
+      has_output_location: this.outputUri !== "",
+    };
+  }
+
+  /** What `console.log` and `util.inspect` print: the toJSON shape, no secret. */
+  [inspect.custom](depth, options, inspectFn = inspect) {
+    return `Run ${inspectFn(this.toJSON(), options)}`;
   }
 
   /** The contract's name for `trigger`. */
@@ -315,7 +354,8 @@ export class Run {
    */
   async writeOutput(data) {
     if (!this.outputUri) {
-      throw new ToftError("this run has no output location", { body: { code: "no_output", retryable: false } });
+      throw refusal("no_output", "this run has no output location",
+        { hint: "the runner sets TOFT_OUTPUT_URI for every run on the platform — call writeOutput from inside a job" });
     }
     if (
       !(typeof data === "string" || data instanceof Uint8Array || data instanceof ArrayBuffer ||
@@ -333,7 +373,11 @@ export class Run {
       throw new ToftError(`uploading output: ${err.message}`);
     }
     if (!resp.ok) {
-      throw storeRefusal("output_unwritable", `uploading output: ${resp.status} ${resp.statusText}`, resp.status);
+      const err = storeRefusal("output_unwritable", `uploading output: ${resp.status} ${resp.statusText}`, resp.status);
+      err.body.hint = resp.status === 429 || resp.status >= 500
+        ? "the object store refused for now — write the output again"
+        : "the run's output URL was refused, which no retry inside this run changes — rerun the job, and tell an administrator if it recurs";
+      throw err;
     }
   }
 
@@ -453,7 +497,13 @@ export function sessionScratchDir(sessionId, ...parts) {
     throw new ToftError(
       "sessionScratchDir needs a non-empty session id — an empty one would " +
         "silently collapse every session into the same directory",
-      { body: { code: "bad_request", retryable: false } },
+      {
+        body: {
+          code: "bad_request",
+          retryable: false,
+          hint: "pass the X-Toft-Session header, or toft.newSessionId() kept in your own cookie for an anonymous viewer",
+        },
+      },
     );
   }
   const encoded = createHash("sha256").update(String(sessionId)).digest("hex").slice(0, 32);

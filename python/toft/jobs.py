@@ -75,6 +75,7 @@ from urllib.parse import quote
 
 from .errors import ToftError, bad_request
 from .session import transport
+from .transport import encode_json
 
 JOBS_PATH = "/api/v1/app/jobs"
 RUNS_PATH = "/api/v1/app/job-runs"
@@ -196,6 +197,15 @@ def _headers_of(request: Any) -> Any:
     return getattr(request, "headers", request)
 
 
+# The run is still going when a wait gives up, so the next step is about the
+# caller's waiting, never the run.
+_WAIT_TIMEOUT_HINT = ("the run is still going — wait again, or answer the request with "
+                      "jobs.respond(run) and let the status page follow it")
+
+# A run's fields the platform leaves out when they are empty, written as null.
+_RUN_NULLABLE_FIELDS = ("rerun_of", "scheduled_for", "deadline", "exit_code", "failure_reason")
+
+
 @dataclass
 class JobRun:
     """A run, and everything an app can do with one.
@@ -289,8 +299,18 @@ class JobRun:
         )
 
     def to_dict(self) -> dict:
-        """The run as the platform sent it — what :meth:`Jobs.respond` answers with."""
-        return dict(self.raw) if self.raw else {"id": self.id, "job": self.job, "status": self.status}
+        """The run as the platform sent it — what :meth:`Jobs.respond` answers with.
+
+        The fields the platform leaves out when empty are present as ``None``,
+        as in the other three SDKs' runs, so a 202 body always carries
+        ``rerun_of``, ``scheduled_for``, ``deadline``, ``exit_code``,
+        ``failure_reason`` and ``deduplicated``.
+        """
+        out = dict(self.raw) if self.raw else {"id": self.id, "job": self.job, "status": self.status}
+        for key in _RUN_NULLABLE_FIELDS:
+            out.setdefault(key, None)
+        out.setdefault("deduplicated", self.deduplicated)
+        return out
 
     # --- State ---
 
@@ -356,7 +376,7 @@ class JobRun:
                 if deadline is not None and time.monotonic() >= deadline:
                     raise WaitTimeout(
                         f"run {self.id} was still {current.status} after {timeout}s",
-                        body={"code": "wait_timeout", "retryable": True},
+                        body={"code": "wait_timeout", "retryable": True, "hint": _WAIT_TIMEOUT_HINT},
                     ) from exc
                 time.sleep(_backoff(exc, poll_interval, deadline))
                 continue
@@ -365,7 +385,7 @@ class JobRun:
             if deadline is not None and time.monotonic() >= deadline:
                 raise WaitTimeout(
                     f"run {self.id} was still {current.status} after {timeout}s",
-                    body={"code": "wait_timeout", "retryable": True},
+                    body={"code": "wait_timeout", "retryable": True, "hint": _WAIT_TIMEOUT_HINT},
                 )
             time.sleep(poll_interval)
 
@@ -531,6 +551,7 @@ class Jobs:
         body: dict[str, Any] = {}
         if params:
             body["params"] = dict(params)
+        encode_json(body)  # bad_request before off_platform, as data.set does
         try:
             raw = transport().post_json(
                 f"{JOBS_PATH}/{quote(job, safe='')}/runs", body,

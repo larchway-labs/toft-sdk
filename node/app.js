@@ -24,6 +24,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { inspect } from "node:util";
 
 import { ToftError, fetchStore, fileRefusal, onPlatform, require_, storeRefusal, transport } from "./transport.js";
 
@@ -178,6 +179,30 @@ export class Mount {
    */
   get readOnly() {
     return !this.writable;
+  }
+
+  /**
+   * The documented fields, as Python's and the platform's: `name`, `kind`,
+   * `path` ("" where not mounted — the raw value, since `.path` refuses there),
+   * `access`, `folder`, `read_only` and `mounted`. Without it
+   * `JSON.stringify(mounts())` carried `mountPath` and lost the two derived
+   * facts, which live on the prototype.
+   */
+  toJSON() {
+    return {
+      name: this.name,
+      kind: this.kind,
+      path: this.mountPath,
+      access: this.access,
+      folder: this.folder,
+      read_only: this.readOnly,
+      mounted: this.mounted,
+    };
+  }
+
+  /** What `console.log` prints: the documented fields. */
+  [inspect.custom](depth, options, inspectFn = inspect) {
+    return `Mount ${inspectFn(this.toJSON(), options)}`;
   }
 
   /**
@@ -457,7 +482,46 @@ export function mounts() {
     throw refused("storage_env_invalid",
       `${ENV_STORAGE} should be a JSON array, got ${parsed === null ? "null" : typeof parsed}`);
   }
-  return parsed.filter((m) => m && typeof m === "object" && !Array.isArray(m)).map((m) => new Mount(m));
+  const entries = parsed.filter((m) => m && typeof m === "object" && !Array.isArray(m));
+  // The platform writes every entry with a name, a kind and an access level
+  // (and a path, "" for a store reached over signed URLs). An entry missing
+  // one is a hand-written stand-in that would resolve to a mount with empty
+  // facts — refused, as Python, Go and R do.
+  for (const entry of entries) {
+    for (const key of ["name", "kind", "access"]) {
+      const value = entry[key];
+      if (typeof value !== "string" || !value.trim()) {
+        throw refused("storage_env_invalid", `a ${ENV_STORAGE} entry has no ${key}: ${JSON.stringify(entry)}`,
+          { hint: STORAGE_ENV_HINT });
+      }
+    }
+  }
+  return entries.map((m) => new Mount(m));
+}
+
+const STORAGE_ENV_HINT =
+  "each TOFT_STORAGE entry names its name, kind (volume or store), path and access; " +
+  "the platform writes it, and a local stand-in needs the same keys";
+
+/**
+ * Hold a folder to the rule an object's name is held to — relative, forward
+ * slashes, no `.` or `..` segments — with "" naming the root. Without it
+ * `storage("x", { folder: ".." })` was not_mapped, "mounted, but not at
+ * folder", a lookup failing where the argument was the fault.
+ */
+function checkFolder(folder, accessor) {
+  const hint = `name a folder of the resource, like toft.${accessor}("drop", { folder: "backup" }), or "" for its root`;
+  if (typeof folder !== "string") {
+    throw refused("invalid_name", `${accessor}()'s folder is a string, got ${typeof folder}`, { hint });
+  }
+  if (!folder) return;
+  if (folder.startsWith("/") || folder.endsWith("/") || folder.includes("\\") ||
+      folder.split("/").some((seg) => seg === "" || seg === "." || seg === "..")) {
+    throw refused("invalid_name",
+      "a folder is a relative path inside the resource, with forward slashes and " +
+        `no '.' or '..' segments, got ${JSON.stringify(folder)}`,
+      { hint });
+  }
 }
 
 /**
@@ -518,6 +582,9 @@ function resolveMount(name, folder, accessor) {
     throw refused("invalid_name", `${accessor}() needs the name an administrator gave the resource`,
       { hint: "pass one of the names toft.mounts() lists" });
   }
+  // null is "do not care", as Python's None; every other value is checked.
+  if (folder === null) folder = undefined;
+  if (folder !== undefined) checkFolder(folder, accessor);
   const all = mounts();
   const named = all.filter((m) => m.name === name);
 

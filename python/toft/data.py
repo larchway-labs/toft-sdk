@@ -38,6 +38,7 @@ from typing import Any, Callable
 
 from .errors import ToftError
 from .session import transport
+from .transport import encode_json
 
 # How many times update() re-reads and re-applies before giving up.
 DEFAULT_ATTEMPTS = 5
@@ -50,6 +51,10 @@ DEFAULT_ATTEMPTS = 5
 RATE_LIMIT_TIMEOUT = 300.0
 # The pause when a rate_limited refusal carried no Retry-After.
 RATE_LIMIT_PAUSE = 1.0
+
+
+VERSION_CONFLICT_HINT = ("read the document again and reapply the change to it, or use "
+                         "toft.data.update(fn), which does that on every conflict")
 
 
 class VersionConflict(ToftError):
@@ -129,6 +134,10 @@ class Data:
                 'to grow a field later, so wrap it, e.g. {"items": [...]}.',
                 body={"code": "bad_request", "retryable": False},
             )
+        # Encoded here, before transport() can refuse off_platform: a value no
+        # request could carry — NaN, an infinity, an object — is bad_request on
+        # a laptop as it is on the platform, not a complaint about the laptop.
+        encode_json(document)
         headers = {} if if_version is None else {"If-Match": f'"{if_version}"'}
         raw = _typed(lambda: transport().put_json("/api/v1/app/data", document, headers))
         # **The write's answer carries what was written.** The platform's reply
@@ -240,11 +249,15 @@ def _typed(call: Callable[[], Any]) -> Any:
         return call()
     except ToftError as exc:
         if exc.code == "version_conflict":
+            body = dict(exc.body)
+            # The platform's 412 names the version stored but no next step,
+            # and the step is this SDK's to name.
+            body.setdefault("hint", VERSION_CONFLICT_HINT)
             raise VersionConflict(
                 str(exc),
                 version=int(exc.body.get("version", 0)),
                 status=exc.status,
                 retry_after=exc.retry_after,
-                body=exc.body,
+                body=body,
             ) from None
         raise

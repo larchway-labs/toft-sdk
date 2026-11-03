@@ -140,7 +140,8 @@ class Part {
         value.type ?? "",
       );
     }
-    throw refusal("bad_request", "an attachment must be a path, a [name, bytes] pair, or {name, content}");
+    throw refusal("bad_request", "an attachment must be a path, a [name, bytes] pair, or {name, content}",
+      { hint: 'pass "/tmp/report.csv", ["report.csv", bytes] or { name, content }' });
   }
 }
 
@@ -167,14 +168,69 @@ function toBytes(value) {
   if (value instanceof Uint8Array || value instanceof ArrayBuffer || ArrayBuffer.isView(value) || value instanceof Blob) {
     return value;
   }
-  throw refusal("bad_request", "an attachment's content must be a string or bytes (Buffer, Uint8Array, ArrayBuffer)");
+  throw refusal("bad_request", "an attachment's content must be a string or bytes (Buffer, Uint8Array, ArrayBuffer)",
+    { hint: "pass content as a string or a Buffer" });
 }
 
-function requireText(value, what) {
+function requireText(value, what, hint) {
   if (typeof value !== "string" || !value.trim()) {
-    throw new ToftError(`${what} needs some text`, { body: { code: "bad_request", retryable: false } });
+    throw refusal("bad_request", `${what} needs some text`,
+      { hint: hint ?? `pass ${what} as a non-empty string` });
   }
   return value;
+}
+
+/**
+ * Fields an app might use to choose where its message goes, by every spelling
+ * a caller reaches for — the platform's `destinationFields`, in snake and
+ * camel case. Refused here with the platform's code, never dropped: a dropped
+ * field is a caller who believes they chose.
+ */
+const DESTINATION_FIELDS = {
+  channel: "its Slack channel",
+  folder: "the folder its files go to",
+  path: "where its files go",
+  url: "the address it posts to",
+  routing_key: "the service it pages",
+  routingKey: "the service it pages",
+  space: "the space it posts to",
+  site: "the site it writes to",
+  webhook: "the receiver it posts to",
+  to_channel: "its channel",
+  toChannel: "its channel",
+};
+
+/** Fields that would choose who a message is from, refused as the platform does. */
+const SENDER_FIELDS = new Set(["from", "replyTo", "reply_to", "headers"]);
+
+/**
+ * Refuse every option this call does not take: a destination field as
+ * `destination_not_allowed`, a sender field as `sender_not_allowed` — the
+ * platform's codes and hints — and anything else as `bad_request`, rather than
+ * leaving it out of the request without a word.
+ */
+function refuseExtras(call, rest, example) {
+  for (const [field, value] of Object.entries(rest)) {
+    if (value === undefined) continue;
+    if (Object.hasOwn(DESTINATION_FIELDS, field)) {
+      throw refusal("destination_not_allowed",
+        `an app does not choose ${DESTINATION_FIELDS[field]} — its owners choose it on the app's ` +
+          `Integrations tab, from what the connection an administrator made can reach. ` +
+          `Remove the ${JSON.stringify(field)} field.`,
+        { hint: `remove the ${JSON.stringify(field)} field; the app's owners choose the destination on its Integrations tab` });
+    }
+    if (SENDER_FIELDS.has(field)) {
+      throw refusal("sender_not_allowed",
+        `an app does not choose its sender or reply-to — mail goes out as "<App Name> (via Toft)" ` +
+          `from this install's address, and replies go to the address set on its Integrations tab, ` +
+          `or to the app's owner when none is`,
+        { hint: "remove from, replyTo and headers from the call; the reply-to address is set on the app's Integrations tab" });
+    }
+  }
+  const unknown = Object.keys(rest).filter((k) => rest[k] !== undefined);
+  if (unknown.length) {
+    throw refusal("bad_request", `${call} does not take ${unknown.join(", ")}`, { hint: example });
+  }
 }
 
 /** Accept one address or many, because both are natural to write. */
@@ -196,7 +252,8 @@ function addresses(value, field) {
   }
   const out = items.map((v) => String(v).trim()).filter(Boolean);
   if (items.length && !out.length) {
-    throw new ToftError(`'${field}' held only blank addresses`, { body: { code: "bad_request", retryable: false } });
+    throw refusal("bad_request", `'${field}' held only blank addresses`,
+      { hint: `pass ${field}: ["someone@example.com"]` });
   }
   return out;
 }
@@ -232,7 +289,7 @@ export class Notify {
    * key would be quietly deduplicating an app that meant to post twice. Pass
    * one for a message whose duplicate would matter.
    */
-  async send(kind, text, { title, severity, dedupKey, action, idempotencyKey } = {}) {
+  async send(kind, text, { title, severity, dedupKey, action, idempotencyKey, ...rest } = {}) {
     if (typeof kind !== "string" || !kind.trim()) {
       // The kind is what is empty, not the text: "integration needs some
       // text" sent the caller looking at the wrong argument.
@@ -248,7 +305,16 @@ export class Notify {
         { hint: "toft.notify.email({ to, subject, text })" },
       );
     }
-    const body = { text: requireText(text, name) };
+    refuseExtras("send()", rest,
+      `toft.notify.send("${name}", text, { title, severity, dedupKey, action, idempotencyKey })`);
+    // A severity is a word ("critical", "warning", …). NaN or a number was
+    // dropped by the truthiness check below, or sent as JSON the platform
+    // cannot read — either way not what the caller wrote.
+    if (severity !== undefined && severity !== null && typeof severity !== "string") {
+      throw refusal("bad_request", `severity is a word such as "critical" or "warning", got ${String(severity)}`,
+        { hint: 'pass severity: "critical", "error", "warning" or "info"' });
+    }
+    const body = { text: requireText(text, name, `toft.notify.send("${name}", "Nightly load complete")`) };
     if (title) body.title = title;
     if (severity) body.severity = severity;
     if (dedupKey) body.dedup_key = dedupKey;
@@ -269,10 +335,11 @@ export class Notify {
    * An app that may page and may not un-page leaves somebody awake with no way
    * to be told it is over, which is why this is not an optional half.
    */
-  async resolve(kind, dedupKey, { reason, idempotencyKey } = {}) {
+  async resolve(kind, dedupKey, { reason, idempotencyKey, ...rest } = {}) {
+    refuseExtras("resolve()", rest, "toft.notify.resolve(kind, dedupKey, { reason, idempotencyKey })");
     return this.send(kind, reason || "Resolved by the application.", {
       action: "resolve",
-      dedupKey: requireText(dedupKey, "dedup key"),
+      dedupKey: requireText(dedupKey, "dedup key", `the dedupKey the trigger used: resolve("${kind}", key)`),
       idempotencyKey,
     });
   }
@@ -293,8 +360,9 @@ export class Notify {
    * report because a response was slow is not cheap, in the destination or on
    * the wire.
    */
-  async deliver(kind, file, { name, title, comment, idempotencyKey } = {}) {
-    const which = requireText(kind, "integration");
+  async deliver(kind, file, { name, title, comment, idempotencyKey, ...rest } = {}) {
+    const which = requireText(kind, "integration", 'toft.notify.deliver("sharepoint", "/tmp/report.xlsx")');
+    refuseExtras("deliver()", rest, `toft.notify.deliver("${which}", file, { name, title, comment, idempotencyKey })`);
     let part = await Part.coerce("file", file);
     if (name) part = new Part("file", name, part.content, part.contentType);
 
@@ -329,8 +397,9 @@ export class Notify {
    * would be quietly deduplicating an app that meant to post twice. Pass one for
    * a message whose duplicate would matter.
    */
-  async slack(text, { idempotencyKey } = {}) {
-    const body = { text: requireText(text, "slack") };
+  async slack(text, { idempotencyKey, ...rest } = {}) {
+    refuseExtras("slack()", rest, "toft.notify.slack(text, { idempotencyKey })");
+    const body = { text: requireText(text, "slack", 'toft.notify.slack("Nightly load complete")') };
     return new Send(await transport().postJson(SLACK_PATH, body, { idempotencyKey }));
   }
 
@@ -343,7 +412,8 @@ export class Notify {
    * `slack()` — re-uploading a 20 MiB report because a response was slow is not
    * cheap, in the channel or on the wire.
    */
-  async slackFile(file, { title, comment, filename, idempotencyKey } = {}) {
+  async slackFile(file, { title, comment, filename, idempotencyKey, ...rest } = {}) {
+    refuseExtras("slackFile()", rest, "toft.notify.slackFile(file, { title, comment, filename, idempotencyKey })");
     let part = await Part.coerce("file", file);
     if (filename) part = new Part("file", filename, part.content, part.contentType);
 
@@ -384,15 +454,18 @@ export class Notify {
    * processes: a cron-driven sender that wants "at most one report per week
    * however many times I run" should pass its own stable key.
    */
-  async email({ to, subject, text, html, cc, bcc, attachments, idempotencyKey } = {}) {
+  async email({ to, subject, text, html, cc, bcc, attachments, idempotencyKey, ...rest } = {}) {
+    refuseExtras("email()", rest,
+      "toft.notify.email({ to, subject, text, html, cc, bcc, attachments, idempotencyKey })");
     const recipients = addresses(to, "to");
     if (!recipients.length) {
       throw new ToftError("email needs at least one recipient in 'to'", { body: { code: "no_recipient", retryable: false, hint: "name who it goes to: pass an address in to (or cc, bcc) — an email has no default recipient" } });
     }
     const body = {
       to: recipients,
-      subject: requireText(subject, "email subject"),
-      text: requireText(text, "email text"),
+      subject: requireText(subject, "email subject", 'pass subject: "Weekly report" — an email needs one'),
+      text: requireText(text, "email text",
+        'pass text: "…" — the plain-text body is required even when html is given'),
     };
     if (html) body.html = html;
     if (cc) body.cc = addresses(cc, "cc");
@@ -425,7 +498,10 @@ export class Notify {
    */
   async status(send) {
     const id = send instanceof Send ? send.id : String(send ?? "");
-    if (!id) throw new ToftError("status() needs the id of a send", { body: { code: "bad_request", retryable: false } });
+    if (!id) {
+      throw refusal("bad_request", "status() needs the id of a send",
+        { hint: "pass the Send a call returned, or its id: toft.notify.status(send)" });
+    }
     return new Send(await transport().get(`${SENDS_PATH}/${encodeURIComponent(id)}`));
   }
 }

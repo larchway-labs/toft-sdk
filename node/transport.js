@@ -221,7 +221,25 @@ export function onPlatform() {
 export function require_(name) {
   const value = (process.env[name] ?? "").trim();
   if (value) return value;
-  throw new ToftError(missing(name), { offPlatform: true, body: { code: missingCode(name), retryable: false } });
+  throw new ToftError(missing(name), {
+    offPlatform: true,
+    body: { code: missingCode(name), retryable: false, hint: missingHint(name) },
+  });
+}
+
+/**
+ * The next step for a missing variable. Inside a job the variable is absent by
+ * design — the app token and `TOFT_APP_ID` belong to the service process — so
+ * the step is to move the call, not to fix a deploy.
+ */
+function missingHint(name) {
+  if ((process.env[ENV_RUN_ID] ?? "").trim()) {
+    if (name === ENV_APP_TOKEN) {
+      return "do this from the service process, or write the result with run.writeOutputJson(...) and let an endpoint read it";
+    }
+    return `${name} belongs to the service process, not a job — read it there, or pass it to the job as a param`;
+  }
+  return `run this in an app deployed on Toft; to try it locally, set ${name} yourself`;
 }
 
 /**

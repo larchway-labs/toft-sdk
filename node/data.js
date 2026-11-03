@@ -99,7 +99,7 @@ export class Data {
       throw new ToftError(
         "app data holds one JSON object — an array or a bare value has nowhere to " +
           'grow a field later, so wrap it, e.g. { items: [...] }.',
-        { body: { code: "bad_request", retryable: false } },
+        { body: { code: "bad_request", retryable: false, hint: "wrap it in an object: { items: [...] }" } },
       );
     }
     const headers = ifVersion === undefined ? undefined : { "If-Match": `"${ifVersion}"` };
@@ -177,7 +177,14 @@ export class Data {
     throw new ToftError(
       `app data changed under ${attempts} attempts to update it — something is ` +
         `writing it continuously`,
-      { status: last?.status, body: last?.body ?? {} },
+      {
+        status: last?.status,
+        body: {
+          ...(last?.body ?? {}),
+          hint: last?.body?.hint ||
+            "another writer keeps changing the document — retry later, or pass a larger attempts",
+        },
+      },
     );
   }
 
