@@ -26,7 +26,7 @@
  * other writer's change survives instead of being overwritten.
  */
 
-import { ToftError, refusal, takeOptions, transport } from "./transport.js";
+import { ToftError, noMoreArgs, refusal, takeOptions, transport } from "./transport.js";
 
 /**
  * The document changed under a write that named the version it meant to
@@ -75,11 +75,13 @@ export class Document {
 export class Data {
   /** The document, or `null` when the app has never written one. */
   async get() {
+    noMoreArgs("data.get()", arguments, 0, "await toft.data.get()");
     return (await this.read()).data;
   }
 
   /** The document *and* its version — what `update()` is built on. */
   async read() {
+    noMoreArgs("data.read()", arguments, 0, "await toft.data.read()");
     return new Document(await transport().get("/api/v1/app/data"));
   }
 

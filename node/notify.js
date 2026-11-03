@@ -45,7 +45,7 @@ import { basename } from "node:path";
 import { readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 
-import { ToftError, fileRefusal, refusal, toJson, transport } from "./transport.js";
+import { ToftError, fileRefusal, noMoreArgs, refusal, toJson, transport } from "./transport.js";
 
 const SLACK_PATH = "/api/v1/app/notify/slack";
 const SLACK_FILE_PATH = "/api/v1/app/notify/slack/file";
@@ -234,8 +234,10 @@ function refuseExtras(call, kind, rest, example) {
     if (Object.hasOwn(DESTINATION_FIELDS, field)) {
       // Named for the integration actually sent to: "its Slack channel" said
       // to a Teams send pointed at an integration the caller never named.
+      // "a send to email", as the platform words it: "email() to email" read
+      // as a stutter (BB-073).
       throw refusal("destination_not_allowed",
-        `${call} to ${kindLabel(kind)} does not take ${JSON.stringify(field)}: an app does not choose ` +
+        `a send to ${kindLabel(kind)} does not take ${JSON.stringify(field)}: an app does not choose ` +
           `${DESTINATION_FIELDS[field]} — its owners choose it on the app's ` +
           `Integrations tab, from what the connection an administrator made can reach. ` +
           `Remove the ${JSON.stringify(field)} field.`,
@@ -519,6 +521,7 @@ export class Notify {
    * minted, about content it wrote, tells it nothing it did not know.
    */
   async status(send) {
+    noMoreArgs("notify.status()", arguments, 1, "await toft.notify.status(send)");
     const id = send instanceof Send ? send.id : String(send ?? "");
     if (!id) {
       throw refusal("bad_request", "status() needs the id of a send",

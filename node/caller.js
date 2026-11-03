@@ -43,7 +43,7 @@
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 
-import { refusal } from "./transport.js";
+import { noMoreArgs, refusal } from "./transport.js";
 
 /**
  * The request header the Toft proxy sets on every request it forwards, and
@@ -190,6 +190,7 @@ export class Caller {
  * type is where a case-sensitive read becomes a bug on somebody else's stack.
  */
 export function caller(headers) {
+  noMoreArgs("caller()", arguments, 1, "toft.caller(req.headers)");
   return new Caller(verifyRole(process.env[ENV_ROLE_KEY] ?? "", headerValue(headers, ROLE_HEADER), Date.now()));
 }
 

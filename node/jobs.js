@@ -61,7 +61,7 @@
  * which records the new run's `rerunOf`.
  */
 
-import { ToftError, refusal, takeOptions, transport } from "./transport.js";
+import { ToftError, noMoreArgs, refusal, takeOptions, transport } from "./transport.js";
 import { findHeader } from "./viewer.js";
 
 const JOBS_PATH = "/api/v1/app/jobs";
@@ -286,6 +286,7 @@ export class JobRun {
 
   /** Re-read this run. */
   async refresh() {
+    noMoreArgs("refresh()", arguments, 0, "await run.refresh()");
     return this.#again(await transport().get(`${RUNS_PATH}/${encodeURIComponent(this.id)}`, this._headers));
   }
 
@@ -303,6 +304,8 @@ export class JobRun {
   async wait(options) {
     const { timeoutMs, pollIntervalMs = 2000, headers } = takeOptions("wait()", options,
       ["timeoutMs", "pollIntervalMs", "headers"], "run.wait({ timeoutMs: 60000, pollIntervalMs: 2000 })");
+    // A finished run returns at once: there is nothing to outlive (BB-072).
+    if (this.done) return this;
     this.#guardRequest(timeoutMs, headers);
     const deadline = timeoutMs === undefined ? undefined : Date.now() + timeoutMs;
     let current = this;
@@ -372,6 +375,7 @@ export class JobRun {
    * nothing behind it is the worst failure shape available here.
    */
   async output() {
+    noMoreArgs("output()", arguments, 0, "await run.output()");
     return transport().follow(`${RUNS_PATH}/${encodeURIComponent(this.id)}/output`, this._headers);
   }
 
@@ -380,6 +384,7 @@ export class JobRun {
    * none. The reading twin every caller otherwise writes by hand.
    */
   async outputJson() {
+    noMoreArgs("outputJson()", arguments, 0, "await run.outputJson()");
     const raw = await this.output();
     if (raw === null || raw === undefined) return null;
     if (!raw.length) {
@@ -401,6 +406,7 @@ export class JobRun {
 
   /** Log lines after `afterSeq`: `{seq, at, stream, line}` each. */
   async logs(afterSeq = 0) {
+    noMoreArgs("logs()", arguments, 1, "await run.logs(afterSeq)");
     const raw = await transport().get(
       `${RUNS_PATH}/${encodeURIComponent(this.id)}/logs?after=${Number(afterSeq)}`,
       this._headers,
@@ -450,6 +456,7 @@ export class JobRun {
    * from before it.
    */
   async cancel() {
+    noMoreArgs("cancel()", arguments, 0, "await run.cancel()");
     await transport().postJson(`${RUNS_PATH}/${encodeURIComponent(this.id)}/cancel`, undefined, {
       headers: this._headers,
     });
@@ -466,6 +473,13 @@ export class JobRun {
  * just their headers.
  */
 export function respond(run, req) {
+  if (!(run instanceof JobRun)) {
+    // A job name or run id in place of the run answered 202 with no Location
+    // (BB-067, found in Python).
+    throw refusal("bad_request",
+      `jobs.respond() takes the run start() returned, got ${JSON.stringify(run) ?? typeof run}`,
+      { hint: 'const run = await toft.jobs.start("report"); return toft.jobs.respond(run, req)' });
+  }
   const headers = req?.headers ?? req;
   const html = findHeader(headers, "Accept").toLowerCase().includes("text/html");
   const location = run.statusUrl ? { Location: run.statusUrl } : {};
@@ -537,6 +551,7 @@ export class Jobs {
   }
 
   async get(runId) {
+    noMoreArgs("jobs.get()", arguments, 1, "await toft.jobs.get(runId)");
     requireName(runId, "jobs.get()");
     return this.#run(await transport().get(`${RUNS_PATH}/${encodeURIComponent(runId)}`, this._headers));
   }

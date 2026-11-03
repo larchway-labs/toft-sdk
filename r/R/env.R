@@ -66,7 +66,19 @@ require_env <- function(name) {
   } else {
     "off_platform"
   }
-  stop(toft_refusal(code, missing_env(name)))
+  stop(toft_refusal(code, missing_env(name), hint = missing_env_hint(name)))
+}
+
+# missing_env_hint is the next step, as Node, Python and Go give it (BB-068):
+# inside a job, move the call; anywhere else, run on Toft or stand it in.
+missing_env_hint <- function(name) {
+  if (nzchar(trimws(Sys.getenv(ENV_RUN_ID, "")))) {
+    if (identical(name, ENV_APP_TOKEN)) {
+      return("do this from the service process, or write the result with run_write_output() and let an endpoint read it")
+    }
+    return(sprintf("%s belongs to the service process, not a job - read it there, or pass it to the job as a param", name))
+  }
+  sprintf("run this in an app deployed on Toft; to try it locally, set %s yourself", name)
 }
 
 # missing_env is why the variable is absent, in the two cases that differ.

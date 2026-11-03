@@ -413,6 +413,10 @@ job_refresh <- function(run) {
 #' @export
 job_wait <- function(run, timeout = NULL, request = NULL, poll = WAIT_POLL_SECONDS) {
   check_run(run, "job_wait")
+  # A finished run returns at once: there is nothing to outlive (BB-072).
+  if (!is.null(run$status) && !run$status %in% OPEN_RUN_STATUSES) {
+    return(run)
+  }
   deadline <- if (!is.null(request)) request_deadline(request) else attr(run, "request_deadline")
   if (!is.null(deadline)) {
     left <- as.numeric(difftime(deadline, Sys.time(), units = "secs"))

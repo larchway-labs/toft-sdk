@@ -186,6 +186,21 @@ export function takeOptions(call, options, allowed, example) {
 }
 
 /**
+ * The arguments past the ones a call takes, refused: a call with no options
+ * object is still handed one — `jobs.get(id, { bogus: 1 })`, `data.get({…})` —
+ * and JavaScript drops it without a word, which reads as an option taken
+ * (BB-066). `undefined` past the end is no argument.
+ */
+export function noMoreArgs(call, args, takes, example) {
+  const extra = Array.prototype.slice.call(args, takes).filter((a) => a !== undefined);
+  if (!extra.length) return;
+  const named = extra.map((a) =>
+    a !== null && typeof a === "object" && !Array.isArray(a) ? Object.keys(a).join(", ") || "{}" : JSON.stringify(a) ?? typeof a);
+  throw refusal("bad_request", `${call} does not take ${named.join(", ")} — it takes no options`,
+    { hint: example });
+}
+
+/**
  * An object store's answer to a URL the platform minted. Coded, because the
  * request reached the store and was refused — statusless and uncoded is for a
  * request that never got an answer — with the status beside it, and retryable

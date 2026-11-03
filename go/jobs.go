@@ -242,6 +242,10 @@ func (r JobRun) Wait(ctx context.Context, opts WaitOptions) (JobRun, error) {
 	} else if opts.Header != nil {
 		deadline = requestDeadline(opts.Header)
 	}
+	// A finished run returns at once: there is nothing to outlive (BB-072).
+	if r.Done() {
+		return r, nil
+	}
 	if !deadline.IsZero() {
 		left := time.Until(deadline)
 		if opts.Timeout <= 0 || opts.Timeout >= left {

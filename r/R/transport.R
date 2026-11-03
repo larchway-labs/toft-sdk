@@ -157,7 +157,9 @@ toft_request <- function(method, path, body = NULL, query = NULL, extra_headers 
     return(resp)
   }
   if (resp$status_code >= 300) {
-    err <- toft_refusal("unexpected_redirect", sprintf("unexpected redirect from %s", path))
+    err <- toft_refusal("unexpected_redirect", sprintf("unexpected redirect from %s", path),
+      hint = paste0("TOFT_API_URL should be the address Toft set for this app; a redirect usually ",
+                    "means it points at a page behind sign-in or at the wrong host"))
     err$status <- resp$status_code
     stop(err)
   }

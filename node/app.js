@@ -26,7 +26,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { inspect } from "node:util";
 
-import { ToftError, fetchStore, fileRefusal, onPlatform, require_, storeRefusal, takeOptions, transport } from "./transport.js";
+import { ToftError, fetchStore, noMoreArgs, fileRefusal, onPlatform, require_, storeRefusal, takeOptions, transport } from "./transport.js";
 
 const ENV_STORAGE = "TOFT_STORAGE";
 const ENV_BASE_PATH = "BASE_PATH";
@@ -473,6 +473,7 @@ function checkRelativeName(name) {
  * R — answering [] there made every mapped resource read as unmapped.
  */
 export function mounts() {
+  noMoreArgs("mounts()", arguments, 0, "toft.mounts()");
   const raw = (process.env[ENV_STORAGE] ?? "").trim();
   if (!raw) return [];
   let parsed;

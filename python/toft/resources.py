@@ -416,7 +416,7 @@ def storage(name: str, folder: str | None = None) -> Mount:
 
 
 _STORAGE_ENV_HINT = ("TOFT_STORAGE is a JSON array of entries, each with a name, a kind (volume or "
-                     "store) and an access (read or readwrite); path is optional — a store reached "
+                     "store) and an access (read, write or full); path is optional — a store reached "
                      "over signed URLs has none. The platform writes it; a local stand-in needs "
                      "the same keys")
 

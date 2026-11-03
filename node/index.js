@@ -118,6 +118,7 @@ import {
   ToftError,
   errorFromText,
   fetchStore,
+  noMoreArgs,
   refusal,
   refuseRedirect,
   storeRefusal,
@@ -343,6 +344,7 @@ export class Run {
    * or not a number, is `bad_request` before any request.
    */
   async progress(percent, message) {
+    noMoreArgs("progress()", arguments, 2, "await run.progress(40, \"reading ledgers\")");
     // Refused before any request, as Python, Go and R do: a bar past its end
     // (or NaN, which Math.round keeps) is the caller's mistake, not progress.
     if (typeof percent !== "number" || !Number.isFinite(percent) || percent < 0 || percent > 100) {
@@ -399,6 +401,7 @@ export class Run {
   }
 
   async writeOutputJson(value) {
+    noMoreArgs("writeOutputJson()", arguments, 1, "await run.writeOutputJson(value)");
     await this.writeOutput(toJson(value));
   }
 }

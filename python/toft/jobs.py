@@ -377,6 +377,10 @@ class JobRun:
 
         Raises :class:`WaitTimeout` when ``timeout`` passes first.
         """
+        # A finished run returns at once, so there is nothing to outlive the
+        # request with: the guard is for a wait that would block (BB-072).
+        if self.done:
+            return self
         self._guard_request(timeout, headers)
         deadline = None if timeout is None else time.monotonic() + timeout
         current = self
@@ -672,6 +676,17 @@ def wants_html(headers: Any) -> bool:
 
 def respond(run: JobRun, request: Any = None) -> Any:
     """:meth:`Jobs.respond`, as a function. See there and the module docstring."""
+    if not isinstance(run, JobRun):
+        # A job name or a run id in place of the run is the mistake made here,
+        # and it read as an AttributeError from inside the SDK (BB-067).
+        raise ToftError(
+            f"jobs.respond() takes the run start() returned, got {type(run).__name__} {run!r}",
+            body={
+                "code": "bad_request",
+                "retryable": False,
+                "hint": 'run = toft.jobs.start("report"); return toft.jobs.respond(run)',
+            },
+        )
     flask_request = _flask_request()
     asking = request if request is not None else flask_request
     location = run.status_url
