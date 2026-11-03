@@ -84,7 +84,8 @@ if_match <- function(if_version) {
     ""
   }
   if (!grepl("^[0-9]+$", text)) {
-    stop(toft_refusal("bad_request", "if_version is the whole-number version a read returned"))
+    stop(toft_refusal("bad_request", "if_version is the whole-number version a read returned",
+                      hint = "pass the version app_data_read() returned, or 0 to write only if nothing is stored"))
   }
   list("If-Match" = paste0("\"", text, "\""))
 }
@@ -171,7 +172,8 @@ app_data_update <- function(fn, attempts = 5L) {
       hint = "app_data_update(function(doc) { doc$runs <- (if (is.null(doc$runs)) 0 else doc$runs) + 1; doc })"))
   }
   if (!is.numeric(attempts) || length(attempts) != 1 || is.na(attempts) || attempts < 1) {
-    stop(toft_refusal("bad_request", "attempts is how many conflicts to retry, at least 1"))
+    stop(toft_refusal("bad_request", "attempts is how many conflicts to retry, at least 1",
+                      hint = "pass a whole number of 1 or more, or leave attempts at its default"))
   }
   for (i in seq_len(attempts)) {
     cur <- app_data_read()

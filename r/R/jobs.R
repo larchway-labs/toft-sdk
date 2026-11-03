@@ -83,7 +83,8 @@ run_headers <- function(run) {
 check_run <- function(run, what) {
   if (!inherits(run, "toft_run") || is.null(run$id) || !nzchar(run$id)) {
     stop(toft_refusal("bad_request", sprintf(
-      "%s needs a run, as job_start(), job_get() or job_list() returned it", what)))
+      "%s needs a run, as job_start(), job_get() or job_list() returned it", what),
+      hint = "pass the run job_start(), job_get() or job_list() returned — not its id"))
   }
 }
 
@@ -198,10 +199,12 @@ job_start <- function(job, ..., params = NULL, idempotency_key = NULL) {
   # otherwise vanish into `...` and the run would start without its params.
   if (length(rest)) {
     stop(toft_refusal("bad_request",
-      "job_start takes params and idempotency_key by name: job_start(\"export\", params = list(...))"))
+      "job_start takes params and idempotency_key by name: job_start(\"export\", params = list(...))",
+      hint = "name the argument: job_start(\"export\", params = list(...))"))
   }
   if (!is.character(job) || length(job) != 1 || !nzchar(trimws(job))) {
-    stop(toft_refusal("bad_request", "job_start needs the name of a job declared in toft.toml"))
+    stop(toft_refusal("bad_request", "job_start needs the name of a job declared in toft.toml",
+      hint = "pass the name of a [jobs.<name>] table in toft.toml, like job_start(\"nightly\")"))
   }
   # No params means no body at all, not an empty one: jsonlite renders an empty
   # R list as `[]`, and the route decodes its body into an object, so sending
@@ -293,7 +296,8 @@ job_get <- function(id) {
 
 read_run <- function(id, act_for = NULL, request_deadline = NULL) {
   if (!is.character(id) || length(id) != 1 || !nzchar(trimws(id))) {
-    stop(toft_refusal("bad_request", "a run id is needed to read a run"))
+    stop(toft_refusal("bad_request", "a run id is needed to read a run",
+                      hint = "pass the id of a run that job_start(), job_list() or job_mine() returned"))
   }
   headers <- NULL
   if (!is.null(act_for)) {
@@ -354,12 +358,14 @@ list_runs <- function(job = NULL, status = NULL, limit = 50, scope = NULL, viewe
   # "nothing has succeeded", and limit = -1 went through as asked.
   if (!is.numeric(limit) || length(limit) != 1 || is.na(limit) || limit < 0 || limit != round(limit)) {
     stop(toft_refusal("bad_request", sprintf(
-      "limit is how many runs to return, a whole number 0 or more — got %s", deparse(limit))))
+      "limit is how many runs to return, a whole number 0 or more — got %s", deparse(limit)),
+      hint = "pass a whole number, or leave limit at its default of 50"))
   }
   if (!is.null(status) && (!is.character(status) || length(status) != 1 || !(status %in% RUN_STATUSES))) {
     stop(toft_refusal("bad_request", sprintf(
       "%s is not a run status — use one of %s, or NULL for every status",
-      deparse(status), paste(RUN_STATUSES, collapse = ", "))))
+      deparse(status), paste(RUN_STATUSES, collapse = ", ")),
+      hint = "pass one of the run statuses, like status = \"failed\", or leave status NULL for every status"))
   }
   query <- list(limit = format(limit, scientific = FALSE))
   if (!is.null(scope)) query$scope <- scope
@@ -604,7 +610,8 @@ require_run <- function(what) {
 run_progress <- function(percent, message = NULL) {
   if (!is.numeric(percent) || length(percent) != 1 || is.na(percent) || percent < 0 || percent > 100) {
     stop(toft_refusal("bad_request", sprintf(
-      "run_progress() takes a percentage from 0 to 100, got %s", deparse(percent))))
+      "run_progress() takes a percentage from 0 to 100, got %s", deparse(percent)),
+      hint = "pass a number from 0 to 100"))
   }
   require_run("run_progress()")
   body <- list(version = RUNNER_CONTRACT_VERSION, percent = as.integer(percent))
@@ -633,7 +640,8 @@ run_write_output <- function(data, json = FALSE) {
   require_run("run_write_output()")
   uri <- trimws(Sys.getenv(ENV_OUTPUT_URI, ""))
   if (!nzchar(uri)) {
-    stop(toft_refusal("no_output", "this run has no output location"))
+    stop(toft_refusal("no_output", "this run has no output location",
+                      hint = "call run_write_output() from inside a job run, where the runner sets the output location"))
   }
   if (json) {
     data <- encode_json(data, "run_write_output()'s value")

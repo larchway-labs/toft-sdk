@@ -61,7 +61,7 @@
  * which records the new run's `rerunOf`.
  */
 
-import { ToftError, refusal, transport } from "./transport.js";
+import { ToftError, refusal, takeOptions, transport } from "./transport.js";
 import { findHeader } from "./viewer.js";
 
 const JOBS_PATH = "/api/v1/app/jobs";
@@ -300,7 +300,9 @@ export class JobRun {
    *
    * Rejects with `wait_timeout` (retryable) when `timeoutMs` passes first.
    */
-  async wait({ timeoutMs, pollIntervalMs = 2000, headers } = {}) {
+  async wait(options) {
+    const { timeoutMs, pollIntervalMs = 2000, headers } = takeOptions("wait()", options,
+      ["timeoutMs", "pollIntervalMs", "headers"], "run.wait({ timeoutMs: 60000, pollIntervalMs: 2000 })");
     this.#guardRequest(timeoutMs, headers);
     const deadline = timeoutMs === undefined ? undefined : Date.now() + timeoutMs;
     let current = this;
@@ -407,7 +409,9 @@ export class JobRun {
   }
 
   /** Async-iterate log lines until the run reaches a terminal status. */
-  async *tail({ pollIntervalMs = 2000 } = {}) {
+  async *tail(options) {
+    const { pollIntervalMs = 2000 } = takeOptions("tail()", options, ["pollIntervalMs"],
+      "for await (const line of run.tail({ pollIntervalMs: 2000 }))");
     let seq = 0;
     for (;;) {
       let lines, done;
@@ -538,7 +542,16 @@ export class Jobs {
   }
 
   /** Every run of this app, newest first — of one job, in one status, when given. */
-  async list({ job, status, limit = 50 } = {}) {
+  async list(options) {
+    if (typeof options === "string") {
+      // Python's `list("nightly", status=…)`: destructuring a string dropped
+      // the job — and the options after it — and answered with every run.
+      throw refusal("bad_request",
+        `list() takes one options object — list({ job: ${JSON.stringify(options)}, status, limit })`,
+        { hint: `list({ job: ${JSON.stringify(options)}, status: "failed", limit: 50 })` });
+    }
+    const { job, status, limit = 50 } = takeOptions("list()", options, ["job", "status", "limit"],
+      'list({ job: "nightly", status: "failed", limit: 50 })');
     if (status !== undefined && status !== null && status !== "" && !RUN_STATUS_CHECK.has(status)) {
       throw refusal("bad_request",
         `list() does not know the status ${JSON.stringify(status)} — one of ${[...RUN_STATUSES].join(", ")}`,
@@ -570,7 +583,7 @@ export class Jobs {
         { body: { code: "bad_request", retryable: false, hint: "mine({ job, limit })" } },
       );
     }
-    const { job, limit = 20 } = options;
+    const { job, limit = 20 } = takeOptions("mine()", options, ["job", "limit"], "mine({ job, limit })");
     if (!Object.keys(this._headers).length) {
       throw new ToftError(
         "mine() needs a viewer — call it on toft.viewer(req.headers).jobs. The app acting " +
@@ -601,8 +614,19 @@ function typed(err) {
     return new QueueFull(err.message, {
       status: err.status,
       retryAfter: err.retryAfter,
-      body: err.body,
+      body: { ...err.body, hint: queueFullHint(err.body?.hint) },
     });
   }
   return err;
+}
+
+/**
+ * The queue-full hint, naming the app: `toft job runs` with no `--app` is a
+ * usage error outside a linked directory, and the person reading an app's log
+ * is rarely in one. The platform's own hint is kept when it already names it.
+ */
+function queueFullHint(hint) {
+  if (typeof hint === "string" && hint.includes("--app")) return hint;
+  const slug = process.env.TOFT_APP_SLUG || "<app>";
+  return `toft job runs --app ${slug} to see what is queued`;
 }

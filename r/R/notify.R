@@ -88,9 +88,19 @@ notify_status <- function(send) {
     if (!is.null(send$send_id)) send$send_id else send$id
   } else send
   if (is.null(id) || !nzchar(as.character(id))) {
-    stop(toft_refusal("bad_request", "notify_status() needs the id of a send"))
+    stop(toft_refusal("bad_request", "notify_status() needs the id of a send",
+                      hint = "pass the send_id that notify() returned, or its whole result"))
   }
-  raw <- toft_request("GET", paste0("/api/v1/app/sends/", utils::URLencode(as.character(id), reserved = TRUE)))
+  raw <- tryCatch(
+    toft_request("GET", paste0("/api/v1/app/sends/", utils::URLencode(as.character(id), reserved = TRUE))),
+    toft_error = function(e) {
+      # The platform's not_found names no next step; the id is the caller's.
+      if (identical(e$code, "not_found") && (is.null(e$hint) || !nzchar(e$hint))) {
+        e$hint <- SEND_NOT_FOUND_HINT
+        e$body$hint <- SEND_NOT_FOUND_HINT
+      }
+      stop(e)
+    })
   status <- if (is.null(raw$status)) "queued" else as.character(raw$status)
   kind <- if (!is.null(raw$kind)) raw$kind else raw$integration
   list(
@@ -104,5 +114,9 @@ notify_status <- function(send) {
     blocked = identical(status, "blocked")
   )
 }
+
+SEND_NOT_FOUND_HINT <- paste0(
+  "pass the send_id notify() returned to this app — a send is readable only by the app that made it, ",
+  "and only while its record is kept")
 
 is_text <- function(x) is.character(x) && length(x) == 1 && !is.na(x) && nzchar(trimws(x))

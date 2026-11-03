@@ -204,7 +204,7 @@ func NewSessionID() (string, error) {
 // whitespace-only id is refused bad_request.
 func SessionScratchDir(sessionID string, parts ...string) (string, error) {
 	if strings.TrimSpace(sessionID) == "" {
-		return "", &Error{Body: refusal("bad_request"), Message: "SessionScratchDir needs a non-empty session id — an " +
+		return "", &Error{Body: refusal("bad_request", "pass r.Header.Get(toft.SessionHeader), or an id from toft.NewSessionID() for a viewer with no session"), Message: "SessionScratchDir needs a non-empty session id — an " +
 			"empty one would silently collapse every session into the same directory"}
 	}
 	sum := sha256.Sum256([]byte(sessionID))

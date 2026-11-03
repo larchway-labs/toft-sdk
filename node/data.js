@@ -26,7 +26,7 @@
  * other writer's change survives instead of being overwritten.
  */
 
-import { ToftError, refusal, transport } from "./transport.js";
+import { ToftError, refusal, takeOptions, transport } from "./transport.js";
 
 /**
  * The document changed under a write that named the version it meant to
@@ -91,7 +91,11 @@ export class Data {
    * if nothing is stored", which is how an app claims first write without a
    * separate call.
    */
-  async set(document, { ifVersion } = {}) {
+  async set(document, options) {
+    // Before anything else: `{ if_version: 3 }` dropped was an unconditional
+    // PUT, the concurrency guard its caller meant to keep gone without a word.
+    const { ifVersion } = takeOptions("data.set()", options, ["ifVersion"],
+      "toft.data.set(doc, { ifVersion: 3 })");
     // The one thing checked locally, and not a duplicated platform limit: an
     // `undefined` here would be serialized as `{}` and quietly wipe the app's
     // settings, which is a wrong request rather than a refused one.
@@ -130,7 +134,10 @@ export class Data {
    * apart from "there was an empty document" — that distinction is the one
    * thing `{}` papers over.
    */
-  async update(mutator, { attempts = DEFAULT_ATTEMPTS, rateLimitTimeout = RATE_LIMIT_TIMEOUT } = {}) {
+  async update(mutator, options) {
+    const { attempts = DEFAULT_ATTEMPTS, rateLimitTimeout = RATE_LIMIT_TIMEOUT } = takeOptions(
+      "data.update()", options, ["attempts", "rateLimitTimeout"],
+      "toft.data.update(fn, { attempts: 5, rateLimitTimeout: 60 })");
     if (typeof rateLimitTimeout !== "number" || !(rateLimitTimeout >= 0)) {
       // A negative or NaN timeout was taken as 0 without a word.
       throw refusal("bad_request",
@@ -195,7 +202,9 @@ export class Data {
    * and one that saved an empty object mean different things, and the next read
    * tells them apart.
    */
-  async clear({ ifVersion } = {}) {
+  async clear(options) {
+    const { ifVersion } = takeOptions("data.clear()", options, ["ifVersion"],
+      "toft.data.clear({ ifVersion: 3 })");
     const headers = ifVersion === undefined ? undefined : { "If-Match": `"${ifVersion}"` };
     const raw = await typed(() => transport().del("/api/v1/app/data", headers));
     return Boolean(raw?.deleted);

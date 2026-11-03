@@ -89,7 +89,7 @@ func (d Document) Decode(v any) (bool, error) {
 	dec := json.NewDecoder(bytes.NewReader(d.raw))
 	dec.UseNumber()
 	if err := dec.Decode(v); err != nil {
-		return true, &Error{Body: refusal("bad_request"), Message: fmt.Sprintf("app data is not the shape asked for: %v", err), Wrapped: err}
+		return true, &Error{Body: refusal("bad_request", "decode into a type matching what was stored, or into a map[string]any"), Message: fmt.Sprintf("app data is not the shape asked for: %v", err), Wrapped: err}
 	}
 	return true, nil
 }
@@ -183,7 +183,7 @@ func (DataClient) write(ctx context.Context, document map[string]any, ifVersion 
 	// map here would be serialized as null and quietly wipe the app's settings,
 	// which is a wrong request rather than a refused one.
 	if document == nil {
-		return Document{}, &Error{Body: refusal("bad_request"), Message: "app data holds one JSON object — pass an " +
+		return Document{}, &Error{Body: refusal("bad_request", "pass map[string]any{} for an empty document, or call toft.Data.Clear(ctx) to remove it"), Message: "app data holds one JSON object — pass an " +
 			"empty map to store an empty document, or call Clear to put the app back to " +
 			"never having one"}
 	}

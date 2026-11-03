@@ -187,7 +187,7 @@ function requireText(value, what, hint) {
  * field is a caller who believes they chose.
  */
 const DESTINATION_FIELDS = {
-  channel: "its Slack channel",
+  channel: "the channel it posts to",
   folder: "the folder its files go to",
   path: "where its files go",
   url: "the address it posts to",
@@ -196,9 +196,28 @@ const DESTINATION_FIELDS = {
   space: "the space it posts to",
   site: "the site it writes to",
   webhook: "the receiver it posts to",
-  to_channel: "its channel",
-  toChannel: "its channel",
+  to_channel: "the channel it posts to",
+  toChannel: "the channel it posts to",
 };
+
+/** How a refusal names an integration kind: its product's name, else the kind. */
+const KIND_LABELS = {
+  slack: "Slack",
+  teams: "Teams",
+  teamsbot: "Teams (bot)",
+  gchat: "Google Chat",
+  discord: "Discord",
+  email: "email",
+  sharepoint: "SharePoint",
+  onedrive: "OneDrive",
+  gdrive: "Google Drive",
+  pagerduty: "PagerDuty",
+  webhook: "a webhook",
+};
+
+function kindLabel(kind) {
+  return Object.hasOwn(KIND_LABELS, kind) ? KIND_LABELS[kind] : JSON.stringify(String(kind));
+}
 
 /** Fields that would choose who a message is from, refused as the platform does. */
 const SENDER_FIELDS = new Set(["from", "replyTo", "reply_to", "headers"]);
@@ -209,12 +228,15 @@ const SENDER_FIELDS = new Set(["from", "replyTo", "reply_to", "headers"]);
  * platform's codes and hints — and anything else as `bad_request`, rather than
  * leaving it out of the request without a word.
  */
-function refuseExtras(call, rest, example) {
+function refuseExtras(call, kind, rest, example) {
   for (const [field, value] of Object.entries(rest)) {
     if (value === undefined) continue;
     if (Object.hasOwn(DESTINATION_FIELDS, field)) {
+      // Named for the integration actually sent to: "its Slack channel" said
+      // to a Teams send pointed at an integration the caller never named.
       throw refusal("destination_not_allowed",
-        `an app does not choose ${DESTINATION_FIELDS[field]} — its owners choose it on the app's ` +
+        `${call} to ${kindLabel(kind)} does not take ${JSON.stringify(field)}: an app does not choose ` +
+          `${DESTINATION_FIELDS[field]} — its owners choose it on the app's ` +
           `Integrations tab, from what the connection an administrator made can reach. ` +
           `Remove the ${JSON.stringify(field)} field.`,
         { hint: `remove the ${JSON.stringify(field)} field; the app's owners choose the destination on its Integrations tab` });
@@ -305,7 +327,7 @@ export class Notify {
         { hint: "toft.notify.email({ to, subject, text })" },
       );
     }
-    refuseExtras("send()", rest,
+    refuseExtras("send()", name, rest,
       `toft.notify.send("${name}", text, { title, severity, dedupKey, action, idempotencyKey })`);
     // A severity is a word ("critical", "warning", …). NaN or a number was
     // dropped by the truthiness check below, or sent as JSON the platform
@@ -336,7 +358,7 @@ export class Notify {
    * to be told it is over, which is why this is not an optional half.
    */
   async resolve(kind, dedupKey, { reason, idempotencyKey, ...rest } = {}) {
-    refuseExtras("resolve()", rest, "toft.notify.resolve(kind, dedupKey, { reason, idempotencyKey })");
+    refuseExtras("resolve()", kind, rest, "toft.notify.resolve(kind, dedupKey, { reason, idempotencyKey })");
     return this.send(kind, reason || "Resolved by the application.", {
       action: "resolve",
       dedupKey: requireText(dedupKey, "dedup key", `the dedupKey the trigger used: resolve("${kind}", key)`),
@@ -362,7 +384,7 @@ export class Notify {
    */
   async deliver(kind, file, { name, title, comment, idempotencyKey, ...rest } = {}) {
     const which = requireText(kind, "integration", 'toft.notify.deliver("sharepoint", "/tmp/report.xlsx")');
-    refuseExtras("deliver()", rest, `toft.notify.deliver("${which}", file, { name, title, comment, idempotencyKey })`);
+    refuseExtras("deliver()", which, rest, `toft.notify.deliver("${which}", file, { name, title, comment, idempotencyKey })`);
     let part = await Part.coerce("file", file);
     if (name) part = new Part("file", name, part.content, part.contentType);
 
@@ -398,7 +420,7 @@ export class Notify {
    * a message whose duplicate would matter.
    */
   async slack(text, { idempotencyKey, ...rest } = {}) {
-    refuseExtras("slack()", rest, "toft.notify.slack(text, { idempotencyKey })");
+    refuseExtras("slack()", "slack", rest, "toft.notify.slack(text, { idempotencyKey })");
     const body = { text: requireText(text, "slack", 'toft.notify.slack("Nightly load complete")') };
     return new Send(await transport().postJson(SLACK_PATH, body, { idempotencyKey }));
   }
@@ -413,7 +435,7 @@ export class Notify {
    * cheap, in the channel or on the wire.
    */
   async slackFile(file, { title, comment, filename, idempotencyKey, ...rest } = {}) {
-    refuseExtras("slackFile()", rest, "toft.notify.slackFile(file, { title, comment, filename, idempotencyKey })");
+    refuseExtras("slackFile()", "slack", rest, "toft.notify.slackFile(file, { title, comment, filename, idempotencyKey })");
     let part = await Part.coerce("file", file);
     if (filename) part = new Part("file", filename, part.content, part.contentType);
 
@@ -455,7 +477,7 @@ export class Notify {
    * however many times I run" should pass its own stable key.
    */
   async email({ to, subject, text, html, cc, bcc, attachments, idempotencyKey, ...rest } = {}) {
-    refuseExtras("email()", rest,
+    refuseExtras("email()", "email", rest,
       "toft.notify.email({ to, subject, text, html, cc, bcc, attachments, idempotencyKey })");
     const recipients = addresses(to, "to");
     if (!recipients.length) {

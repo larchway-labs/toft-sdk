@@ -132,7 +132,8 @@ class Data:
             raise ToftError(
                 "app data holds one JSON object — a list or a bare value has nowhere "
                 'to grow a field later, so wrap it, e.g. {"items": [...]}.',
-                body={"code": "bad_request", "retryable": False},
+                body={"code": "bad_request", "retryable": False,
+                      "hint": 'pass a dict — wrap a list as {"items": [...]}'},
             )
         # Encoded here, before transport() can refuse off_platform: a value no
         # request could carry — NaN, an infinity, an object — is bad_request on

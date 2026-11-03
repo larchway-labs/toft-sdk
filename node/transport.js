@@ -156,6 +156,36 @@ export function refusal(code, message, { hint, ...options } = {}) {
 }
 
 /**
+ * The options object a call was given, held to the options it takes: anything
+ * else is `bad_request` before any request, with the call's own example as the
+ * hint — never dropped. A dropped option is a caller who believes it took
+ * effect: `data.set(doc, { if_version: 3 })` was an unconditional write, and
+ * `storage("x", { fold: "a" })` the resource's root. `undefined` and `null`
+ * are "no options"; a key whose value is `undefined` is one not given. A
+ * snake_case spelling of an option the call does take is named in the hint,
+ * because that is the mistake a reader of the Python SDK makes.
+ */
+export function takeOptions(call, options, allowed, example) {
+  if (options === undefined || options === null) return {};
+  if (typeof options !== "object" || Array.isArray(options)) {
+    throw refusal("bad_request",
+      `${call} takes an options object, got ${Array.isArray(options) ? "an array" : JSON.stringify(options) ?? typeof options}`,
+      { hint: example });
+  }
+  const unknown = Object.keys(options).filter((k) => options[k] !== undefined && !allowed.includes(k));
+  if (unknown.length) {
+    const camel = unknown
+      .map((k) => [k, k.replace(/_([a-z])/g, (_, c) => c.toUpperCase())])
+      .filter(([k, c]) => c !== k && allowed.includes(c))
+      .map(([k, c]) => `${c}, not ${k}`);
+    const takes = allowed.length ? `it takes ${allowed.join(", ")}` : "it takes no options";
+    throw refusal("bad_request", `${call} does not take ${unknown.join(", ")} — ${takes}`,
+      { hint: camel.length ? `${camel.join("; ")}: ${example}` : example });
+  }
+  return options;
+}
+
+/**
  * An object store's answer to a URL the platform minted. Coded, because the
  * request reached the store and was refused — statusless and uncoded is for a
  * request that never got an answer — with the status beside it, and retryable

@@ -218,7 +218,9 @@ def session_scratch_dir(session_id: str, *parts: str) -> Path:
         raise ToftError(
             "session_scratch_dir needs a non-empty session id — an empty one "
             "would silently collapse every session into the same directory",
-            body={"code": "bad_request", "retryable": False},
+            body={"code": "bad_request", "retryable": False,
+                  "hint": "pass the X-Toft-Session header's value, or a session id of "
+                          "the app's own; toft.new_session_id() mints one"},
         )
     encoded = hashlib.sha256(session_id.encode()).hexdigest()[:32]
     return scratch_dir(encoded, *parts)

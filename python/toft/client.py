@@ -32,6 +32,7 @@ import os
 import sys
 import urllib.error
 import urllib.request
+import weakref
 from typing import Any, Optional
 
 # Re-exported so `from toft.client import ToftError` keeps working.
@@ -39,7 +40,7 @@ from typing import Any, Optional
 # everything in the package needs the error and nothing else should need the
 # jobs client to get it.
 from .caller import ROLE_UNKNOWN
-from .errors import ToftError, bad_request, store_refused
+from .errors import ToftError, bad_request, refused, store_refused
 from .jobs import _parse_time
 from .transport import _from_http_error_or_redirect, _open_without_redirects
 
@@ -51,6 +52,13 @@ DEFAULT_TIMEOUT = 30.0
 #: ``progress`` call a job makes. ``sdk/contract_test.go``
 #: is what keeps the four copies of it in step.
 RUNNER_CONTRACT_VERSION = "2"
+
+
+def _sealed(value: str) -> Any:
+    """``value`` behind a call, so ``repr``/``vars`` show a function, not it."""
+    def reveal() -> str:
+        return value
+    return reveal
 
 
 class _RunnerTransport:
@@ -66,13 +74,21 @@ class _RunnerTransport:
 
     def __init__(self, base_url: str, token: str, timeout: float = DEFAULT_TIMEOUT) -> None:
         self._base = base_url.rstrip("/")
-        self._token = token
+        # A closure, not the string: a transport reached through a debugger's
+        # vars() must not print the run's credential either.
+        self._token = _sealed(token)
         self._timeout = timeout
+
+    def __repr__(self) -> str:
+        return f"_RunnerTransport({self._base!r})"
+
+    def __reduce_ex__(self, protocol: Any) -> Any:
+        raise refused("bad_request", "the runner transport holds the run's credential and cannot be pickled")
 
     def request(self, method: str, path: str, body: Any = None) -> Any:
         data = json.dumps(body).encode() if body is not None else None
         req = urllib.request.Request(f"{self._base}{path}", data=data, method=method)
-        req.add_header("Authorization", f"Bearer {self._token}")
+        req.add_header("Authorization", f"Bearer {self._token()}")
         req.add_header("Content-Type", "application/json")
         req.add_header("X-Toft-Runner-Version", RUNNER_CONTRACT_VERSION)
 
@@ -90,6 +106,25 @@ class _RunnerTransport:
             raise ToftError(f"cannot reach Toft at {self._base}: {exc.reason}") from None
 
 
+class _RunSecrets:
+    """A run's token and output URL — held here, never on the Run itself."""
+
+    __slots__ = ("token", "output_uri")
+
+    def __init__(self, token: str, output_uri: str) -> None:
+        self.token = token
+        self.output_uri = output_uri
+
+    def __repr__(self) -> str:
+        return "_RunSecrets(<redacted>)"
+
+    def __reduce_ex__(self, protocol: Any) -> Any:
+        raise refused("bad_request", "a run's credentials cannot be pickled")
+
+
+_SECRETS: "weakref.WeakKeyDictionary[Run, _RunSecrets]" = weakref.WeakKeyDictionary()
+
+
 class Run:
     """The job's own view of itself: who started it, its params, its deadline;
     report progress, log, write output.
@@ -98,15 +133,20 @@ class Run:
     already exported, so a job never handles a credential explicitly.
     """
 
-    def __init__(self, base_url: str, token: str, run_id: str) -> None:
-        self._t = _RunnerTransport(base_url, token)
+    def __init__(self, base_url: str, token: str, run_id: str, output_uri: Optional[str] = None) -> None:
+        # The run token and the presigned output URL are kept off the instance:
+        # vars(run), dir(run)'s values and a debugger's locals pane read
+        # __dict__, and the URL carries X-Amz-Credential and a session token.
+        # They live in a module-level table keyed weakly by this object.
+        _SECRETS[self] = _RunSecrets(
+            token, os.environ.get("TOFT_OUTPUT_URI", "") if output_uri is None else output_uri)
+        self._base_url = base_url
         self.id = run_id
         #: The job this run is of — its ``[jobs.<name>]`` in ``toft.toml``.
         self.job = os.environ.get("TOFT_JOB_NAME", "")
         #: The run this one re-ran, or ``None``. A rerun carries the same
         #: params; a job that must not repeat a side effect checks this.
         self.rerun_of = os.environ.get("TOFT_RERUN_OF") or None
-        self.output_uri = os.environ.get("TOFT_OUTPUT_URI", "")
         #: *How* this run started: ``app``, ``viewer``, ``cli``, ``schedule`` or
         #: ``ui`` — the run's ``started_by``.
         self.trigger = os.environ.get("TOFT_TRIGGER", "")
@@ -130,6 +170,31 @@ class Run:
         # a job's log is read by anyone who can read the app's runs.
         return f"Run(id={self.id!r}, job={self.job!r}, trigger={self.trigger}/{self.trigger_role})"
 
+    def __reduce_ex__(self, protocol: Any) -> Any:
+        # Pickling would write the run token into the bytes — a multiprocessing
+        # queue, a cache, a task broker. Refused rather than silently dropped:
+        # a run unpickled without its token would fail later, somewhere else.
+        raise refused(
+            "bad_request",
+            "a job's run cannot be pickled: it holds the run's own credential",
+            hint="pass run.id and run.params instead; any process of the job "
+                 "can read toft.run itself, from the environment the runner set")
+
+    def __reduce__(self) -> Any:
+        return self.__reduce_ex__(2)
+
+    def __copy__(self) -> "Run":
+        return self
+
+    def __deepcopy__(self, memo: Any) -> "Run":
+        return self
+
+    def _transport(self) -> "_RunnerTransport":
+        return _RunnerTransport(self._base_url, _SECRETS[self].token)
+
+    def _output_uri(self) -> str:
+        return _SECRETS[self].output_uri
+
     @classmethod
     def from_env(cls) -> "Run":
         base_url = os.environ.get("TOFT_API_URL")
@@ -139,7 +204,8 @@ class Run:
             raise ToftError(
                 "not running inside a Toft job — TOFT_API_URL, "
                 "TOFT_JOB_TOKEN and TOFT_RUN_ID are set by the runner",
-                body={"code": "off_platform", "retryable": False},
+                body={"code": "off_platform", "retryable": False,
+                      "hint": "use toft.run, which is None outside a job, rather than Run.from_env()"},
             )
         return cls(base_url, token, run_id)
 
@@ -178,11 +244,12 @@ class Run:
         ``percent`` outside 0–100 is refused with ``bad_request`` before any
         request, rather than drawn as a bar past its end."""
         if isinstance(percent, bool) or not isinstance(percent, (int, float)) or not 0 <= percent <= 100:
-            raise bad_request(f"progress is a percentage from 0 to 100, got {percent!r}")
+            raise bad_request(f"progress is a percentage from 0 to 100, got {percent!r}",
+                              hint="pass a number from 0 to 100, e.g. run.progress(40, \"loading rows\")")
         body: dict[str, Any] = {"version": RUNNER_CONTRACT_VERSION, "percent": int(percent)}
         if message:
             body["message"] = str(message)
-        self._t.request("POST", "/api/v1/runner/progress", body)
+        self._transport().request("POST", "/api/v1/runner/progress", body)
 
     def log(self, message: str, error: bool = False) -> None:
         """Write one line to this run's log.
@@ -200,7 +267,8 @@ class Run:
         path would work in shared mode and would then make an app written
         against it unable to move to isolated mode.
         """
-        if not self.output_uri:
+        output_uri = self._output_uri()
+        if not output_uri:
             raise ToftError("this run has no output location",
                             body={"code": "no_output", "retryable": False})
         if not isinstance(data, (str, bytes, bytearray, memoryview)):
@@ -208,7 +276,7 @@ class Run:
                 f"write_output takes bytes or text, got {type(data).__name__}",
                 hint="use write_output_json(value) for anything else")
         body = data.encode() if isinstance(data, str) else bytes(data)
-        req = urllib.request.Request(self.output_uri, data=body, method="PUT")
+        req = urllib.request.Request(output_uri, data=body, method="PUT")
         try:
             with urllib.request.urlopen(req, timeout=DEFAULT_TIMEOUT):
                 return

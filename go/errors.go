@@ -156,11 +156,11 @@ func AsError(err error) (*Error, bool) {
 // directory, a permission) is the caller's request being wrong, bad_request.
 // Neither is helped by trying again.
 func localFileError(verb, path string, err error) error {
-	code := "bad_request"
+	code, hint := "bad_request", "name a regular file this process can read"
 	if errors.Is(err, fs.ErrNotExist) {
-		code = "not_found"
+		code, hint = "not_found", "check the path — a relative one is resolved against the process's working directory"
 	}
-	return &Error{Body: refusal(code), Message: fmt.Sprintf("cannot %s %s: %v", verb, path, err), Wrapped: err}
+	return &Error{Body: refusal(code, hint), Message: fmt.Sprintf("cannot %s %s: %v", verb, path, err), Wrapped: err}
 }
 
 // localWriteError is a failure to write somewhere on this workload's own

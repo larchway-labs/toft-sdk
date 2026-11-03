@@ -86,6 +86,12 @@ func (m Mount) Put(source, name string) (string, error) {
 	if err := m.checkMapped(); err != nil {
 		return "", err
 	}
+	// A volume is refused as every other store method refuses it — Put is store
+	// sugar, and the Mount that Store returns beside not_a_store must not quietly
+	// copy into the volume it named (BB-055).
+	if err := m.checkIsStore(); err != nil {
+		return "", err
+	}
 	if err := checkRelativeName(target); err != nil {
 		return "", err
 	}
@@ -174,7 +180,7 @@ func Mounts() ([]Mount, error) {
 		Folder string `json:"folder"`
 	}
 	if err := json.Unmarshal([]byte(raw), &entries); err != nil {
-		return nil, &Error{Body: refusal("storage_env_invalid"), Message: fmt.Sprintf("%s is not a JSON array of resources: %v", EnvStorage, err), Wrapped: err}
+		return nil, &Error{Body: refusal("storage_env_invalid", storageEnvHint), Message: fmt.Sprintf("%s is not a JSON array of resources: %v", EnvStorage, err), Wrapped: err}
 	}
 	out := make([]Mount, 0, len(entries))
 	for _, entry := range entries {
@@ -195,7 +201,8 @@ func Mounts() ([]Mount, error) {
 	return out, nil
 }
 
-const storageEnvHint = "each TOFT_STORAGE entry names its name, kind (volume or store), path and access; " +
+const storageEnvHint = "TOFT_STORAGE is a JSON array of objects, each with name, kind (volume or store) and access, " +
+	"plus path where the resource is mounted (a store reached by signed URL has none); " +
 	"the platform writes it, and a local stand-in needs the same keys"
 
 // checkFolder holds a folder to the rule an object's name is held to —

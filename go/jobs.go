@@ -230,8 +230,11 @@ type WaitOptions struct {
 // follow the run. A short wait that fits is allowed.
 //
 // A Timeout that runs out is named wait_timeout and is retryable, because the
-// run is still going and waiting again is fair. Cancel the context to stop
-// waiting; the run keeps going either way.
+// run is still going and waiting again is fair — and so is a deadline on ctx
+// that passes (context.WithTimeout or WithDeadline), which is a timeout by
+// another name. A ctx cancelled outright (its cancel func, or a parent's) is
+// wait_cancelled, not retryable: somebody chose to stop. The run keeps going
+// either way.
 func (r JobRun) Wait(ctx context.Context, opts WaitOptions) (JobRun, error) {
 	deadline := r.requestDeadline
 	if opts.Request != nil {
@@ -262,7 +265,7 @@ func (r JobRun) Wait(ctx context.Context, opts WaitOptions) (JobRun, error) {
 		body := map[string]any{"code": "wait_timeout", "retryable": true,
 			"hint": "the run is still going — wait again, or answer the request with toft.Jobs.Respond(w, r, run) and let the status page follow it"}
 		if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			body = refusal("wait_cancelled")
+			body = refusal("wait_cancelled", "the context was cancelled — the run keeps going; read it later with toft.Jobs.Get(ctx, id)")
 		}
 		return &Error{
 			Message: fmt.Sprintf("run %s was still %s when the wait was cut short", r.ID, current.Status),
@@ -371,9 +374,11 @@ func (r JobRun) Output(ctx context.Context) ([]byte, error) {
 	return t.follow(ctx, fmt.Sprintf("%s/%s/output", jobRunsPath, url.PathEscape(r.ID)), r.headers)
 }
 
-// OutputJSON decodes the output WriteOutputJSON wrote into v, and reports false
-// when the run produced none. The reading twin every caller otherwise writes by
-// hand.
+// OutputJSON decodes the output WriteOutputJSON wrote into v, and reports true
+// only when v was filled: false with a nil error when the run produced no
+// output, and false with the error when it could not be read or decoded — an
+// empty or non-JSON output is not_json. The reading twin every caller otherwise
+// writes by hand.
 func (r JobRun) OutputJSON(ctx context.Context, v any) (bool, error) {
 	raw, err := r.Output(ctx)
 	if err != nil || raw == nil {
@@ -381,7 +386,7 @@ func (r JobRun) OutputJSON(ctx context.Context, v any) (bool, error) {
 	}
 	if len(raw) == 0 {
 		// Written, and empty — which is not JSON, and not "no output" either.
-		return true, &Error{Body: refusal("not_json", "read the bytes with Output"),
+		return false, &Error{Body: refusal("not_json", "read the bytes with Output"),
 			Message: fmt.Sprintf("run %s's output is empty, which is not JSON — it was written empty", r.ID)}
 	}
 	if err := json.Unmarshal(raw, v); err != nil {
@@ -390,11 +395,11 @@ func (r JobRun) OutputJSON(ctx context.Context, v any) (bool, error) {
 			// The bytes are the run's and they are not JSON — WriteOutput rather
 			// than WriteOutputJSON. No retry changes them, so the refusal is
 			// coded and final, as Node's and Python's not_json are.
-			return true, &Error{Body: refusal("not_json", "read the bytes with Output"),
+			return false, &Error{Body: refusal("not_json", "read the bytes with Output"),
 				Message: fmt.Sprintf("run %s's output is not JSON (%v) — it was written with WriteOutput rather than WriteOutputJSON", r.ID, err),
 				Wrapped: err}
 		}
-		return true, err
+		return false, err
 	}
 	return true, nil
 }
@@ -498,7 +503,7 @@ func (r JobRun) Cancel(ctx context.Context) error {
 
 func readRun(ctx context.Context, id string, headers map[string]string) (JobRun, error) {
 	if strings.TrimSpace(id) == "" {
-		return JobRun{}, badRequest("a run id is needed to read a run")
+		return JobRun{}, badRequest("a run id is needed to read a run", "pass the ID of a run that Start, List or Mine returned")
 	}
 	t, err := client()
 	if err != nil {
@@ -522,8 +527,8 @@ func runFrom(raw []byte, headers map[string]string) (JobRun, error) {
 
 // badRequest is a call the SDK refuses before it reaches the platform, coded
 // as the platform codes the same mistake.
-func badRequest(message string) error {
-	return &Error{Body: refusal("bad_request"), Message: message}
+func badRequest(message, hint string) error {
+	return &Error{Body: refusal("bad_request", hint), Message: message}
 }
 
 // StartOptions carries what a run is started with.
@@ -559,14 +564,15 @@ type ListOptions struct {
 // "nothing has succeeded".
 func (o ListOptions) check() error {
 	if o.Limit < 0 {
-		return badRequest(fmt.Sprintf("Limit is how many runs to return, and cannot be negative (got %d); zero is the default", o.Limit))
+		return badRequest(fmt.Sprintf("Limit is how many runs to return, and cannot be negative (got %d); zero is the default", o.Limit), "leave Limit at 0 for the default, or pass a positive number")
 	}
 	switch o.Status {
 	case "", RunQueued, RunRunning, RunSucceeded, RunFailed, RunTimedOut, RunOutOfMemory, RunCancelled, RunSkipped:
 		return nil
 	}
 	return badRequest(fmt.Sprintf("%q is not a run status — use one of queued, running, succeeded, failed, "+
-		"timed_out, out_of_memory, cancelled or skipped, or \"\" for every status", o.Status))
+		"timed_out, out_of_memory, cancelled or skipped, or \"\" for every status", o.Status),
+		"use one of the Run* status constants, like toft.RunFailed, or leave Status empty for every status")
 }
 
 // JobsClient is the job surface, either as the app or on a person's behalf.
@@ -584,7 +590,8 @@ type JobsClient struct {
 // Start queues a run and returns its handle immediately.
 func (j *JobsClient) Start(ctx context.Context, job string, opts StartOptions) (JobRun, error) {
 	if strings.TrimSpace(job) == "" {
-		return JobRun{}, badRequest("Start needs the name of a job declared in toft.toml")
+		return JobRun{}, badRequest("Start needs the name of a job declared in toft.toml",
+			"pass the name of a [jobs.<name>] table in toft.toml, like toft.Jobs.Start(ctx, \"nightly\", toft.StartOptions{})")
 	}
 	var body any
 	if len(opts.Params) > 0 {

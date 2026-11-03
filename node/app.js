@@ -26,7 +26,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { inspect } from "node:util";
 
-import { ToftError, fetchStore, fileRefusal, onPlatform, require_, storeRefusal, transport } from "./transport.js";
+import { ToftError, fetchStore, fileRefusal, onPlatform, require_, storeRefusal, takeOptions, transport } from "./transport.js";
 
 const ENV_STORAGE = "TOFT_STORAGE";
 const ENV_BASE_PATH = "BASE_PATH";
@@ -262,7 +262,8 @@ export class Mount {
   // unchanged. The platform signs and never sees the bytes.
 
   /** One page of what is under `path`; names are relative to it. */
-  async list(listPath = "", { cursor = "" } = {}) {
+  async list(listPath = "", options) {
+    const { cursor = "" } = takeOptions("list()", options, ["cursor"], 'mount.list("reports/", { cursor })');
     if (listPath) checkRelativeName(listPath.replace(/\/$/, ""));
     const page =
       (await transport().get(
@@ -346,7 +347,9 @@ export class Mount {
    * minutes, and anyone holding it reads that object until then — the point for
    * a download link, and the reason not to log one.
    */
-  async url(name, { attachment = false } = {}) {
+  async url(name, options) {
+    const { attachment = false } = takeOptions("url()", options, ["attachment"],
+      'mount.url("report.pdf", { attachment: true })');
     return (await this.#signGet(name, attachment)).url;
   }
 
@@ -476,11 +479,13 @@ export function mounts() {
   try {
     parsed = JSON.parse(raw);
   } catch (err) {
-    throw refused("storage_env_invalid", `${ENV_STORAGE} is not valid JSON: ${err.message}`);
+    throw refused("storage_env_invalid", `${ENV_STORAGE} is not valid JSON: ${err.message}`,
+      { hint: STORAGE_ENV_HINT });
   }
   if (!Array.isArray(parsed)) {
     throw refused("storage_env_invalid",
-      `${ENV_STORAGE} should be a JSON array, got ${parsed === null ? "null" : typeof parsed}`);
+      `${ENV_STORAGE} should be a JSON array, got ${parsed === null ? "null" : typeof parsed}`,
+      { hint: STORAGE_ENV_HINT });
   }
   const entries = parsed.filter((m) => m && typeof m === "object" && !Array.isArray(m));
   // The platform writes every entry with a name, a kind and an access level
@@ -500,8 +505,9 @@ export function mounts() {
 }
 
 const STORAGE_ENV_HINT =
-  "each TOFT_STORAGE entry names its name, kind (volume or store), path and access; " +
-  "the platform writes it, and a local stand-in needs the same keys";
+  "TOFT_STORAGE is a JSON array whose entries each name their name, kind (volume or store) " +
+  "and access, and a path where the resource is mounted — a store reached " +
+  "by signed URL has none; the platform writes it, and a local stand-in needs the same keys";
 
 /**
  * Hold a folder to the rule an object's name is held to — relative, forward
@@ -534,7 +540,8 @@ function checkFolder(folder, accessor) {
  * `storage()` keeps answering for both kinds, because app code that has a volume
  * mounted has done nothing wrong.
  */
-export function store(name, { folder } = {}) {
+export function store(name, options) {
+  const { folder } = takeOptions("store()", options, ["folder"], `toft.store("drop", { folder: "backup" })`);
   const mount = resolveMount(name, folder, "store");
   if (mount.kind && mount.kind !== "store") {
     throw refused("not_a_store",
@@ -566,7 +573,10 @@ export function store(name, { folder } = {}) {
  * An absent `folder` means *do not care*, which is the ordinary case and is only
  * ambiguous when there is genuinely more than one. `folder: ""` names the root.
  */
-export function storage(name, { folder } = {}) {
+export function storage(name, options) {
+  // `{ fold: "a" }` dropped resolved the resource's root — a different mount,
+  // possibly a writable one, than the folder its caller named.
+  const { folder } = takeOptions("storage()", options, ["folder"], `toft.storage("drop", { folder: "backup" })`);
   return resolveMount(name, folder, "storage");
 }
 

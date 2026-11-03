@@ -169,7 +169,7 @@ func (r *Run) Params(value any) error {
 		return nil
 	}
 	if err := json.Unmarshal([]byte(raw), value); err != nil {
-		return &Error{Body: refusal("bad_request"), Message: fmt.Sprintf("this run's parameters are not the shape this job expects: %v", err), Wrapped: err}
+		return &Error{Body: refusal("bad_request", "decode into a type matching the params the run was started with, or into a map[string]any"), Message: fmt.Sprintf("this run's parameters are not the shape this job expects: %v", err), Wrapped: err}
 	}
 	return nil
 }
@@ -212,7 +212,7 @@ func envTime(name string) (time.Time, bool) {
 // to draw it.
 func (r *Run) Progress(ctx context.Context, percent int, message string) error {
 	if percent < 0 || percent > 100 {
-		return badRequest(fmt.Sprintf("progress is a percentage from 0 to 100, got %d", percent))
+		return badRequest(fmt.Sprintf("progress is a percentage from 0 to 100, got %d", percent), "pass a whole number from 0 to 100")
 	}
 	body := map[string]any{"version": runnerContractVersion, "percent": percent}
 	if message != "" {

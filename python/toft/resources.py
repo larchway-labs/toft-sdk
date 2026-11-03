@@ -65,6 +65,13 @@ class Mount:
     # appears stays the administrator's choice.
     folder: str = ""
 
+    def __repr__(self) -> str:
+        # Named for the attribute app code reads — ``path`` — rather than the
+        # field behind it; None where the resource is not mounted here.
+        path = self.mount_path or None
+        return (f"Mount(name={self.name!r}, kind={self.kind!r}, path={path!r}, "
+                f"access={self.access!r}, folder={self.folder!r})")
+
     @property
     def read_only(self) -> bool:
         return self.access == "read"
@@ -352,9 +359,11 @@ def mounts() -> list[Mount]:
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError as exc:
-        raise _refused("storage_env_invalid", f"{ENV_STORAGE} is not valid JSON: {exc}") from None
+        raise _refused("storage_env_invalid", f"{ENV_STORAGE} is not valid JSON: {exc}",
+                       hint=_STORAGE_ENV_HINT) from None
     if not isinstance(parsed, list):
-        raise _refused("storage_env_invalid", f"{ENV_STORAGE} should be a JSON array, got {type(parsed).__name__}")
+        raise _refused("storage_env_invalid", f"{ENV_STORAGE} should be a JSON array, got {type(parsed).__name__}",
+                       hint=_STORAGE_ENV_HINT)
 
     out: list[Mount] = []
     for entry in parsed:
@@ -406,8 +415,10 @@ def storage(name: str, folder: str | None = None) -> Mount:
     return _resolve(name, folder, "storage")
 
 
-_STORAGE_ENV_HINT = ("each TOFT_STORAGE entry names its name, kind (volume or store), path and "
-                     "access; the platform writes it, and a local stand-in needs the same keys")
+_STORAGE_ENV_HINT = ("TOFT_STORAGE is a JSON array of entries, each with a name, a kind (volume or "
+                     "store) and an access (read or readwrite); path is optional — a store reached "
+                     "over signed URLs has none. The platform writes it; a local stand-in needs "
+                     "the same keys")
 
 
 def _check_folder(folder: Any, accessor: str) -> None:

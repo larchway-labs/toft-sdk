@@ -97,9 +97,15 @@ LISTABLE_STATUSES = frozenset({"queued", "running"}) | TERMINAL_STATUSES
 MAX_LIST_LIMIT = 200
 
 
+_NAME_HINTS = {
+    "name": "pass a job name as toft.toml declares it under [jobs.<name>]",
+    "run id": "pass a run's id, as start() or list() returned it",
+}
+
+
 def _require_name(value: Any, what: str, noun: str = "name") -> str:
     if not isinstance(value, str) or not value.strip():
-        raise bad_request(f"{what} needs a non-empty {noun}, got {value!r}")
+        raise bad_request(f"{what} needs a non-empty {noun}, got {value!r}", hint=_NAME_HINTS.get(noun))
     return value
 
 
@@ -213,7 +219,10 @@ class JobRun:
     Returned by :meth:`Jobs.start` before the work begins — which is the point.
     Every method here is a fresh read or an action; nothing is cached, because a
     run's whole purpose is to change while you are not looking. Timestamps are
-    the platform's RFC 3339 text, or None where the run has not reached them.
+    the platform's RFC 3339 text, or None where the run has not reached them —
+    except :attr:`scheduled_for`, which is an aware ``datetime`` as
+    ``toft.run.scheduled_for`` is, keeping the offset the platform sent (the
+    schedule's zone); :attr:`scheduled_for_text` is that text as sent.
     """
 
     id: str
@@ -227,7 +236,9 @@ class JobRun:
     #: The run this one re-ran, when a person asked for that.
     rerun_of: str | None = None
     params: dict = field(default_factory=dict)
-    scheduled_for: str | None = None
+    #: The instant the run is for, as an aware datetime in the offset the
+    #: platform sent — the same type as ``toft.run.scheduled_for``.
+    scheduled_for: datetime.datetime | None = None
     queued_at: str | None = None
     started_at: str | None = None
     finished_at: str | None = None
@@ -277,7 +288,7 @@ class JobRun:
             started_by=str(data.get("started_by") or ""),
             rerun_of=text("rerun_of"),
             params=dict(params) if isinstance(params, Mapping) else {},
-            scheduled_for=text("scheduled_for"),
+            scheduled_for=_parse_time(text("scheduled_for")),
             queued_at=text("queued_at"),
             started_at=text("started_at"),
             finished_at=text("finished_at"),
@@ -311,6 +322,12 @@ class JobRun:
             out.setdefault(key, None)
         out.setdefault("deduplicated", self.deduplicated)
         return out
+
+    @property
+    def scheduled_for_text(self) -> str | None:
+        """:attr:`scheduled_for` as the run record carries it, offset and all."""
+        value = self.raw.get("scheduled_for") if self.raw else None
+        return str(value) if value not in (None, "") else None
 
     # --- State ---
 
@@ -574,7 +591,11 @@ class Jobs:
 
     def get(self, run_id: str) -> JobRun:
         _require_name(run_id, "get()", "run id")
-        return self._run(transport().get(f"{RUNS_PATH}/{quote(run_id, safe='')}", self._headers))
+        try:
+            raw = transport().get(f"{RUNS_PATH}/{quote(run_id, safe='')}", self._headers)
+        except ToftError as exc:
+            raise _with_fallback_hint(exc, "not_found", _RUN_NOT_FOUND_HINT) from None
+        return self._run(raw)
 
     def list(self, job: str | None = None, status: str | None = None, limit: int = 50) -> list[JobRun]:
         """Every run of this app, newest first — of one job, in one status, when given.
@@ -702,6 +723,19 @@ def _serving_asgi() -> bool:
     thread, so "is a loop running" would miss it; the framework being loaded
     with no Flask request in hand is the signal."""
     return "fastapi" in sys.modules or "starlette" in sys.modules
+
+
+_RUN_NOT_FOUND_HINT = ("check the run id — toft.jobs.list() lists this app's runs; "
+                       "a run of another app is not found from this one")
+
+
+def _with_fallback_hint(exc: ToftError, code: str, hint: str) -> ToftError:
+    """The platform's refusal, with ``hint`` filled in when it sent none."""
+    if exc.code != code or exc.hint:
+        return exc
+    body = dict(getattr(exc, "body", None) or {})
+    body["hint"] = hint
+    return ToftError(str(exc), status=exc.status, retry_after=exc.retry_after, body=body)
 
 
 def _typed(exc: ToftError) -> ToftError:

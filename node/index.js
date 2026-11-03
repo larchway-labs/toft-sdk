@@ -122,6 +122,7 @@ import {
   refuseRedirect,
   storeRefusal,
   resetTransport,
+  takeOptions,
   toJson,
   transport,
 } from "./transport.js";
@@ -201,14 +202,20 @@ async function runnerRequest(baseUrl, token, method, path, body, timeoutMs = DEF
  * `writeOutput` is the one durable result channel, and it outlives scratch.
  */
 export class Run {
+  // Private fields, not properties: the job token is a bearer credential and
+  // the output URL a presigned one carrying signed object-store credentials,
+  // and `console.log(toft.run)` lands in a job log anyone who can run
+  // `toft job logs` reads. Non-enumerable own properties kept them out of
+  // console.log but not out of `Object.getOwnPropertyDescriptors(run)`, which
+  // a generic serializer or debugger walks; no reflection reaches a #field.
+  // toJSON and the inspect form below say what there is without either.
+  #baseUrl;
+  #token;
+  #outputUri;
+
   constructor({ baseUrl, token, id } = {}) {
-    // Not enumerable, as the access token's value is not: the job token is a
-    // bearer credential and the output URL a presigned one carrying signed
-    // object-store credentials, and `console.log(toft.run)` lands in a job
-    // log anyone who can run `toft job logs` reads. toJSON and the inspect
-    // form below say what there is without either.
-    Object.defineProperty(this, "_baseUrl", { value: baseUrl ?? process.env.TOFT_API_URL, enumerable: false });
-    Object.defineProperty(this, "_token", { value: token ?? process.env.TOFT_JOB_TOKEN, enumerable: false });
+    this.#baseUrl = baseUrl ?? process.env.TOFT_API_URL;
+    this.#token = token ?? process.env.TOFT_JOB_TOKEN;
     this.id = id ?? process.env.TOFT_RUN_ID;
     /** The job this run is of — its `[jobs.<name>]` in `toft.toml`. */
     this.job = process.env.TOFT_JOB_NAME ?? "";
@@ -217,10 +224,7 @@ export class Run {
      * that must not repeat a side effect checks this.
      */
     this.rerunOf = process.env.TOFT_RERUN_OF || null;
-    /** The presigned URL `writeOutput` PUTs to. A credential: never log it. */
-    Object.defineProperty(this, "outputUri", {
-      value: process.env.TOFT_OUTPUT_URI ?? "", enumerable: false, writable: true,
-    });
+    this.#outputUri = process.env.TOFT_OUTPUT_URI ?? "";
     /**
      * `trigger` is *how* this run started — `app`, `viewer`, `cli`, `schedule`
      * or `ui`, the run's `startedBy`. `triggerRole` is *who* — one of the ROLE_*
@@ -241,7 +245,7 @@ export class Run {
     this.trigger = process.env.TOFT_TRIGGER ?? "";
     this.triggerRole = process.env.TOFT_TRIGGER_ROLE || ROLE_UNKNOWN;
 
-    if (!this._baseUrl || !this._token || !this.id) {
+    if (!this.#baseUrl || !this.#token || !this.id) {
       throw new ToftError(
         "not running inside a Toft job — TOFT_API_URL, TOFT_JOB_TOKEN " +
           "and TOFT_RUN_ID are set by the runner",
@@ -259,6 +263,18 @@ export class Run {
 
   static fromEnv() {
     return new Run();
+  }
+
+  /**
+   * The presigned URL `writeOutput` PUTs to. A credential: never log it. An
+   * accessor over a private field, so it is on no instance's own properties.
+   */
+  get outputUri() {
+    return this.#outputUri;
+  }
+
+  set outputUri(value) {
+    this.#outputUri = value ?? "";
   }
 
   /**
@@ -335,7 +351,7 @@ export class Run {
     }
     const body = { version: CONTRACT_VERSION, percent: Math.round(percent) };
     if (message) body.message = String(message);
-    await runnerRequest(this._baseUrl, this._token, "POST", "/api/v1/runner/progress", body);
+    await runnerRequest(this.#baseUrl, this.#token, "POST", "/api/v1/runner/progress", body);
   }
 
   /**
@@ -343,7 +359,8 @@ export class Run {
    * with `{ error: true }`) — the runner ships both — and here so a job does
    * not have to know that.
    */
-  log(message, { error = false } = {}) {
+  log(message, options) {
+    const { error = false } = takeOptions("log()", options, ["error"], 'run.log("failed", { error: true })');
     (error ? process.stderr : process.stdout).write(`${message}\n`);
   }
 

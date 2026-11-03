@@ -48,7 +48,17 @@ def require(name: str) -> str:
     value = os.environ.get(name, "").strip()
     if value:
         return value
-    raise ToftError(_missing(name), body={"code": _missing_code(name), "retryable": False})
+    code = _missing_code(name)
+    raise ToftError(_missing(name), body={"code": code, "retryable": False, "hint": _missing_hint(name, code)})
+
+
+def _missing_hint(name: str, code: str) -> str:
+    """The next step for :func:`require`'s refusal."""
+    if code == "job_send_only":
+        return ("do this from the service process, or write the result with "
+                "run.write_output_json(...) and let an endpoint fold it in")
+    return (f"run this in an app deployed on Toft, which sets {name}; to try it "
+            f"locally, export the variables a deployed app is given")
 
 
 def _missing_code(name: str) -> str:

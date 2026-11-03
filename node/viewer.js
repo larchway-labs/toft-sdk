@@ -33,7 +33,7 @@
 
 import { ROLE_ANONYMOUS, ROLE_UNKNOWN, caller } from "./caller.js";
 import { Jobs, requestDeadline } from "./jobs.js";
-import { ToftError, transport } from "./transport.js";
+import { ToftError, takeOptions, transport } from "./transport.js";
 
 /**
  * How long a resolved identity is reused for the same blob.
@@ -96,7 +96,8 @@ export class Viewer {
    * The same call `who()` makes, reached from a `Viewer` an app already built
    * to start a job.
    */
-  async identity({ refresh = false } = {}) {
+  async identity(options) {
+    const { refresh = false } = takeOptions("identity()", options, ["refresh"], "viewer.identity({ refresh: true })");
     return resolveIdentity(this._blob, refresh);
   }
 
@@ -134,7 +135,8 @@ export class Viewer {
  * gating on `role === "owner"` alone would grant every administrator the thing
  * with no way for the app to refuse. `email` is `null` on a public app.
  */
-export async function who(headers, { refresh = false } = {}) {
+export async function who(headers, options) {
+  const { refresh = false } = takeOptions("who()", options, ["refresh"], "toft.who(req.headers, { refresh: true })");
   const blob = findHeader(headers, ACT_FOR_HEADER);
   if (!blob) return null;
   return resolveIdentity(blob, refresh);

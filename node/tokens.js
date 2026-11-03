@@ -26,7 +26,7 @@
 
 import { inspect } from "node:util";
 
-import { refusal, transport } from "./transport.js";
+import { refusal, takeOptions, transport } from "./transport.js";
 
 /** The connection kinds a token is handed out for. */
 export const TOKEN_KINDS = ["sharepoint", "onedrive", "gdrive"];
@@ -77,7 +77,10 @@ const cache = new Map();
  * Rejects with a `ToftError` carrying the platform's words when the connection
  * hands out no tokens, or the token would reach more than files.
  */
-export async function accessToken(kind) {
+export async function accessToken(kind, options) {
+  // It takes no options; one passed is refused rather than ignored, as every
+  // other call's unknown option is.
+  takeOptions("accessToken()", options, [], 'toft.accessToken("sharepoint")');
   // An empty kind reached POST /api/v1/app/tokens/ and came back as
   // route_not_found, which names a path rather than the mistake.
   if (typeof kind !== "string" || !kind.trim()) {
@@ -98,7 +101,8 @@ export async function accessToken(kind) {
  * Microsoft's libraries call `getToken` and get Toft's. The scopes are ignored —
  * the token is for Graph with whatever the connection was granted.
  */
-export function azureCredential(kind) {
+export function azureCredential(kind, options) {
+  takeOptions("azureCredential()", options, [], 'toft.azureCredential("sharepoint")');
   // Refused here, as Python's is, rather than on the first getToken deep
   // inside Microsoft's library: a Google Drive token is not one Graph accepts.
   if (!AZURE_KINDS.includes(kind)) {

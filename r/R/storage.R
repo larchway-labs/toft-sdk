@@ -34,7 +34,8 @@ mounts <- function() {
     jsonlite::fromJSON(raw, simplifyVector = FALSE),
     error = function(e) {
       stop(toft_refusal("storage_env_invalid",
-                        sprintf("%s is not valid JSON: %s", ENV_STORAGE, conditionMessage(e))))
+                        sprintf("%s is not valid JSON: %s", ENV_STORAGE, conditionMessage(e)),
+                        hint = STORAGE_ENV_HINT))
     }
   )
   if (!is.list(parsed) || (length(parsed) > 0 && !is.null(names(parsed)))) {
@@ -65,8 +66,11 @@ mounts <- function() {
   })
 }
 
+LOCAL_FILE_HINT <- "check the path — a relative one is resolved against the working directory, getwd()"
+
 STORAGE_ENV_HINT <- paste0(
-  "each TOFT_STORAGE entry names its name, kind (volume or store), path and access; ",
+  "TOFT_STORAGE is a JSON array of objects, each with name, kind (volume or store) and access, ",
+  "plus path where the resource is mounted (a store reached by signed URL has none); ",
   "the platform writes it, and a local stand-in needs the same keys")
 
 # The platform writes every entry with a name, a kind and an access level (and
@@ -268,10 +272,11 @@ store_put <- function(mount, source, name = NULL) {
       hint = "use store_upload(), which reaches the store through the platform"))
   }
   if (missing(source) || !nzchar(source)) {
-    stop(toft_refusal("bad_request", "store_put() needs the path of a local file to copy"))
+    stop(toft_refusal("bad_request", "store_put() needs the path of a local file to copy",
+                      hint = "pass the path of a local file: store_put(s, \"report.csv\")"))
   }
   if (!file.exists(source)) {
-    stop(toft_refusal("bad_request", sprintf("no such file: %s", source)))
+    stop(toft_refusal("bad_request", sprintf("no such file: %s", source), hint = LOCAL_FILE_HINT))
   }
   target <- if (is.null(name)) basename(source) else name
   check_relative_name(target)
@@ -337,7 +342,8 @@ store_list <- function(mount, path = "", cursor = "") {
 store_upload <- function(mount, source, name = NULL) {
   mount <- as_store(mount, "store_upload()")
   if (missing(source) || !file.exists(source)) {
-    stop(toft_refusal("bad_request", sprintf("no such file: %s", if (missing(source)) "" else source)))
+    stop(toft_refusal("bad_request", sprintf("no such file: %s", if (missing(source)) "" else source),
+                      hint = LOCAL_FILE_HINT))
   }
   target <- if (is.null(name) || !nzchar(name)) basename(source) else name
   check_relative_name(target)
@@ -442,7 +448,8 @@ as_store <- function(mount, what) {
     return(store(mount))
   }
   if (!is.list(mount)) {
-    stop(toft_refusal("bad_request", sprintf("%s needs a store, as store() returns it, or its name", what)))
+    stop(toft_refusal("bad_request", sprintf("%s needs a store, as store() returns it, or its name", what),
+                      hint = "pass store(\"name\"), or the name itself, as the first argument"))
   }
   if (is.null(mount$name) || !nzchar(or_empty(mount$name))) {
     stop(toft_refusal("not_mapped", sprintf("%s was given a mount that names no storage resource", what),
