@@ -133,6 +133,15 @@ resolve_mount <- function(name, folder, accessor) {
     ), hint = sprintf("name the folder: %s('%s', folder = '%s')", accessor, name, named[[1]]$folder)))
   }
 
+  if (length(available) == 0 &&
+      !any(nzchar(trimws(Sys.getenv(c("TOFT_API_URL", "TOFT_APP_ID", "TOFT_RUN_ID", "TOFT_SCRATCH_DIR")))))) {
+    # Off the platform there is nothing to map, and "ask an administrator"
+    # would send somebody to one over a laptop — the code the others raise.
+    stop(toft_refusal("off_platform", sprintf(paste0(
+      "%s('%s') needs the storage Toft maps into a deployed app (TOFT_STORAGE) — ",
+      "it only resolves in an app running on the platform"), accessor, name),
+      hint = "set TOFT_STORAGE to a JSON array of mounts to stand one in locally"))
+  }
   if (length(available) == 0) {
     stop(toft_refusal("not_mapped", sprintf(
       paste0("no storage resource named '%s', and this app has none mapped at all — ",
@@ -458,7 +467,7 @@ send_signed <- function(signed, data, keep = FALSE) {
   if (length(headers)) {
     curl::handle_setheaders(handle, .list = lapply(headers, as.character))
   }
-  resp <- curl::curl_fetch_memory(signed$url, handle = handle)
+  resp <- fetch(signed$url, handle, "cannot reach the object store")
   if (keep) list(status = resp$status_code, content = resp$content) else resp$status_code
 }
 
@@ -467,10 +476,8 @@ check_signed_status <- function(status) {
     # A toft_error like every other refusal, so tryCatch(toft_error = ) sees
     # it. No body to say otherwise, so the status decides: a throttle or a
     # server error may pass, anything else is the request itself.
-    e <- toft_refusal("", sprintf("the object store refused the request (%d)", status),
-                      retryable = status == 429 || status >= 500)
-    e$status <- as.integer(status)
-    stop(e)
+    stop(store_refusal("store_refused",
+      sprintf("the object store refused the request (%d)", status), status))
   }
   invisible(TRUE)
 }

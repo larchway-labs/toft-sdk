@@ -39,7 +39,7 @@ from typing import Any, Optional
 # everything in the package needs the error and nothing else should need the
 # jobs client to get it.
 from .caller import ROLE_UNKNOWN
-from .errors import ToftError, bad_request
+from .errors import ToftError, bad_request, store_refused
 from .jobs import _parse_time
 from .transport import _from_http_error_or_redirect, _open_without_redirects
 
@@ -208,7 +208,8 @@ class Run:
             with urllib.request.urlopen(req, timeout=DEFAULT_TIMEOUT):
                 return
         except urllib.error.HTTPError as exc:
-            raise ToftError(f"uploading output: {exc.reason}", status=exc.code) from None
+            raise store_refused("output_unwritable", f"uploading output: {exc.code} {exc.reason}",
+                                exc.code) from None
         except urllib.error.URLError as exc:
             # A transport failure — the one kind of statusless error that is
             # rightly retryable.

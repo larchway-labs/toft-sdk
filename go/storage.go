@@ -147,7 +147,9 @@ func checkRelativeName(name string) error {
 func Mounts() ([]Mount, error) {
 	raw := strings.TrimSpace(os.Getenv(EnvStorage))
 	if raw == "" {
-		return nil, nil
+		// Empty, not nil: encoded, it is [] — the list every other SDK answers
+		// — rather than null.
+		return []Mount{}, nil
 	}
 	var entries []struct {
 		Name   string `json:"name"`
@@ -224,6 +226,12 @@ func storageIn(name string, folder *string, accessor string) (Mount, error) {
 		return Mount{}, &Error{Body: refusal("ambiguous_mount", hint), Message: fmt.Sprintf(
 			"%d mounts are named %q — %s. Name one: toft.%sIn(%q, %q)",
 			len(named), name, describeFolders(named), accessor, name, named[0].Folder)}
+	}
+	if len(available) == 0 && !onPlatform() {
+		// Off the platform there is nothing to map, and "ask an administrator"
+		// would send somebody to one over a laptop — the code Node raises.
+		return Mount{}, &Error{Body: refusal("off_platform", "set "+EnvStorage+" to a JSON array of mounts to stand one in locally"),
+			Message: fmt.Sprintf("%s(%q) needs the storage Toft maps into a deployed app (%s) — it only resolves in an app running on the platform", accessor, name, EnvStorage)}
 	}
 	if len(available) == 0 {
 		return Mount{}, &Error{Body: refusal("not_mapped", "ask an administrator to map storage on the app's Storage tab"), Message: fmt.Sprintf(
@@ -307,6 +315,17 @@ func refusal(code string, hint ...string) map[string]any {
 		body["hint"] = hint[0]
 	}
 	return body
+}
+
+// onPlatform reports whether any variable the platform sets on every workload
+// is here — the test Node's SDK makes for the same refusal.
+func onPlatform() bool {
+	for _, name := range []string{"TOFT_API_URL", "TOFT_APP_ID", "TOFT_RUN_ID", "TOFT_SCRATCH_DIR"} {
+		if strings.TrimSpace(os.Getenv(name)) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // nameHint is the next step every name refusal shares.

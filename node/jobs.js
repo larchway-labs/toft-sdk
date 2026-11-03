@@ -73,15 +73,37 @@ const RUNS_PATH = "/api/v1/app/job-runs";
  */
 export const REQUEST_DEADLINE_HEADER = "X-Toft-Request-Deadline";
 
-/** Statuses that will not change again. Polling stops here. */
-export const TERMINAL_STATUSES = new Set([
-  "succeeded",
-  "failed",
-  "timed_out",
-  "out_of_memory",
-  "cancelled",
-  "skipped",
-]);
+/**
+ * A Set nobody can change. The two exported below were plain Sets, so
+ * `RUN_STATUSES.add("bogus")` let `list({ status: "bogus" })` past its own
+ * check; the checks also read private copies, so not even
+ * `Set.prototype.add.call` reaches them.
+ */
+class FrozenSet extends Set {
+  constructor(values) {
+    super();
+    for (const v of values) super.add(v);
+    Object.freeze(this);
+  }
+
+  add() {
+    throw new TypeError("this set is read-only");
+  }
+
+  delete() {
+    throw new TypeError("this set is read-only");
+  }
+
+  clear() {
+    throw new TypeError("this set is read-only");
+  }
+}
+
+const TERMINAL = ["succeeded", "failed", "timed_out", "out_of_memory", "cancelled", "skipped"];
+const TERMINAL_CHECK = new Set(TERMINAL);
+
+/** Statuses that will not change again. Polling stops here. Read-only. */
+export const TERMINAL_STATUSES = new FrozenSet(TERMINAL);
 
 /**
  * Every status a run can be listed by: the two before it ends, and the six it
@@ -111,7 +133,8 @@ function checkLimit(limit) {
   return limit;
 }
 
-export const RUN_STATUSES = new Set(["queued", "running", ...TERMINAL_STATUSES]);
+export const RUN_STATUSES = new FrozenSet(["queued", "running", ...TERMINAL]);
+const RUN_STATUS_CHECK = new Set(["queued", "running", ...TERMINAL]);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -213,7 +236,7 @@ export class JobRun {
 
   /** Whether this run will change again. */
   get done() {
-    return TERMINAL_STATUSES.has(this.status);
+    return TERMINAL_CHECK.has(this.status);
   }
 
   get succeeded() {
@@ -333,7 +356,12 @@ export class JobRun {
    */
   async outputJson() {
     const raw = await this.output();
-    if (!raw || !raw.length) return null;
+    if (raw === null || raw === undefined) return null;
+    if (!raw.length) {
+      // Written, and empty — which is not JSON, and not "no output" either.
+      throw refusal("not_json", `run ${this.id}'s output is empty, which is not JSON — it was written empty`,
+        { hint: "read the bytes with output()" });
+    }
     try {
       return JSON.parse(Buffer.from(raw).toString("utf8"));
     } catch (err) {
@@ -488,7 +516,7 @@ export class Jobs {
 
   /** Every run of this app, newest first — of one job, in one status, when given. */
   async list({ job, status, limit = 50 } = {}) {
-    if (status !== undefined && status !== null && status !== "" && !RUN_STATUSES.has(status)) {
+    if (status !== undefined && status !== null && status !== "" && !RUN_STATUS_CHECK.has(status)) {
       throw refusal("bad_request",
         `list() does not know the status ${JSON.stringify(status)} — one of ${[...RUN_STATUSES].join(", ")}`,
         { hint: `list({ status: "failed" }) — one of ${[...RUN_STATUSES].join(", ")}` });

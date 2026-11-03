@@ -47,8 +47,46 @@ store_handle <- function() {
   curl::new_handle(timeout = UPLOAD_TIMEOUT)
 }
 
+# transport_failure is the condition a request that never got an answer
+# signals — a refused connection, a name that does not resolve, a timeout. A
+# `toft_error` like every other failure here, so `tryCatch(toft_error = )`
+# catches it, and the one kind that is uncoded and retryable: nothing refused
+# the request, so trying again may work. It used to escape as curl's own
+# `curl_error_couldnt_connect`, with no `code` or `retryable` to branch on.
+transport_failure <- function(what, cause) {
+  structure(
+    class = c("toft_error", "error", "condition"),
+    list(message = sprintf("%s: %s", what, conditionMessage(cause)), call = NULL,
+         status = NA_integer_, code = "", retryable = TRUE, hint = NULL,
+         retry_after = NULL, body = list())
+  )
+}
+
+# fetch is curl_fetch_memory with a transport failure turned into that
+# condition. `what` opens its message: "cannot reach Toft at <url>".
+fetch <- function(url, handle, what) {
+  tryCatch(curl::curl_fetch_memory(url, handle = handle),
+           error = function(e) stop(transport_failure(what, e)))
+}
+
+# encode_json is the one way a body becomes JSON here, so NaN and Inf are
+# refused for every call at once. jsonlite writes them as the strings "NaN" and
+# "Inf": a job's params, a run's output and a notification's fields reached the
+# platform as text where a number was — data changed without an error. Python,
+# Node and Go refuse the same value before any request.
+encode_json <- function(value, what = "the request body") {
+  if (has_non_finite(value)) {
+    stop(toft_refusal("bad_request", sprintf(paste0(
+      "%s holds NaN or Inf, which JSON cannot hold — it would arrive as a ",
+      "string in the number's place"), what),
+      hint = "replace NaN and Inf with NULL or a number before sending"))
+  }
+  jsonlite::toJSON(value, auto_unbox = TRUE, null = "null")
+}
+
 toft_request <- function(method, path, body = NULL, query = NULL, extra_headers = NULL,
                          token = NULL, parse = TRUE) {
+  payload <- if (is.null(body)) NULL else encode_json(body)
   if (is.null(token)) {
     token <- app_or_job_token()
   }
@@ -74,8 +112,7 @@ toft_request <- function(method, path, body = NULL, query = NULL, extra_headers 
     }
   }
 
-  if (!is.null(body)) {
-    payload <- jsonlite::toJSON(body, auto_unbox = TRUE, null = "null")
+  if (!is.null(payload)) {
     headers[["Content-Type"]] <- "application/json"
     curl::handle_setopt(handle, postfields = payload)
   }
@@ -87,7 +124,13 @@ toft_request <- function(method, path, body = NULL, query = NULL, extra_headers 
                       timeout = DEFAULT_TIMEOUT)
   curl::handle_setheaders(handle, .list = as.list(headers))
 
-  resp <- curl::curl_fetch_memory(url, handle = handle)
+  # A transport failure is tried once more, as in the other three SDKs: it
+  # never reached a handler, so nothing was refused and nothing was done.
+  reach <- sprintf("cannot reach Toft at %s", api_url())
+  resp <- tryCatch(fetch(url, handle, reach), toft_error = function(e) {
+    Sys.sleep(DEFAULT_RETRY_AFTER)
+    fetch(url, handle, reach)
+  })
   text <- rawToChar(resp$content)
   Encoding(text) <- "UTF-8"
 
@@ -100,7 +143,7 @@ toft_request <- function(method, path, body = NULL, query = NULL, extra_headers 
     # empty for as long as it polled.
     if (isTRUE(err$retryable) && (err$status == 429 || err$status >= 500)) {
       Sys.sleep(if (is.null(err$retry_after)) DEFAULT_RETRY_AFTER else err$retry_after)
-      resp <- curl::curl_fetch_memory(url, handle = handle)
+      resp <- fetch(url, handle, reach)
       text <- rawToChar(resp$content)
       Encoding(text) <- "UTF-8"
       if (resp$status_code >= 400) {
@@ -154,6 +197,16 @@ toft_refusal <- function(code, message, hint = NULL, retryable = FALSE) {
          retryable = retryable, hint = hint, retry_after = NULL,
          body = body)
   )
+}
+
+# store_refusal is an object store's answer to a URL the platform minted: coded,
+# because the store answered — the request reached it and was refused — with the
+# status beside it, and retryable only for what the status rule calls a blip (a
+# throttle, a server error). The other three SDKs raise the same code.
+store_refusal <- function(code, message, status) {
+  e <- toft_refusal(code, message, retryable = status == 429 || status >= 500)
+  e$status <- as.integer(status)
+  e
 }
 
 toft_error <- function(method, path, resp, text) {

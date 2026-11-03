@@ -119,6 +119,7 @@ import {
   fetchStore,
   refusal,
   refuseRedirect,
+  storeRefusal,
   resetTransport,
   toJson,
   transport,
@@ -331,7 +332,9 @@ export class Run {
       if (err instanceof ToftError) throw err;
       throw new ToftError(`uploading output: ${err.message}`);
     }
-    if (!resp.ok) throw new ToftError(`uploading output: ${resp.statusText}`, { status: resp.status });
+    if (!resp.ok) {
+      throw storeRefusal("output_unwritable", `uploading output: ${resp.status} ${resp.statusText}`, resp.status);
+    }
   }
 
   async writeOutputJson(value) {

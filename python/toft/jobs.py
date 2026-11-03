@@ -96,9 +96,9 @@ LISTABLE_STATUSES = frozenset({"queued", "running"}) | TERMINAL_STATUSES
 MAX_LIST_LIMIT = 200
 
 
-def _require_name(value: Any, what: str) -> str:
+def _require_name(value: Any, what: str, noun: str = "name") -> str:
     if not isinstance(value, str) or not value.strip():
-        raise bad_request(f"{what} needs a non-empty name, got {value!r}")
+        raise bad_request(f"{what} needs a non-empty {noun}, got {value!r}")
     return value
 
 
@@ -423,8 +423,15 @@ class JobRun:
         when the run produced none. The reading twin every caller otherwise
         writes as ``json.loads(run.output() or b"null")``."""
         raw = self.output()
-        if not raw:
+        if raw is None:
             return None  # no output, as Node's outputJson answers null
+        if not raw:
+            # Written, and empty — which is not JSON, and not "no output" either.
+            raise ToftError(
+                f"run {self.id}'s output is empty, which is not JSON — it was written empty",
+                body={"code": "not_json", "retryable": False,
+                      "hint": "read the bytes with output()"},
+            )
         try:
             return json.loads(raw)
         except ValueError as exc:
@@ -545,7 +552,7 @@ class Jobs:
         return respond(run, request)
 
     def get(self, run_id: str) -> JobRun:
-        _require_name(run_id, "get()")
+        _require_name(run_id, "get()", "run id")
         return self._run(transport().get(f"{RUNS_PATH}/{quote(run_id, safe='')}", self._headers))
 
     def list(self, job: str | None = None, status: str | None = None, limit: int = 50) -> list[JobRun]:

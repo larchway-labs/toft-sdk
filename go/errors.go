@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/http"
 	"time"
 )
 
@@ -167,6 +168,20 @@ func localFileError(verb, path string, err error) error {
 // retryable: the same write against the same disk fails the same way.
 func localWriteError(path string, err error) error {
 	return &Error{Body: refusal("write_failed"), Message: fmt.Sprintf("cannot write %s: %v", path, err), Wrapped: err}
+}
+
+// objectStoreRefusal is an object store's answer to a URL the platform minted. Coded,
+// because the request reached the store and was refused — statusless and
+// uncoded is for a request that never got an answer — with the status beside
+// it, and retryable only for what the status rule calls a blip: a throttle or
+// a server error. A 403 used to come back code "" and not retryable, the one
+// combination the contract says never happens.
+func objectStoreRefusal(code, message string, status int) *Error {
+	return &Error{
+		Body:    map[string]any{"code": code, "retryable": status == http.StatusTooManyRequests || status >= 500},
+		Message: message,
+		Status:  status,
+	}
 }
 
 // encodeError is a value of the caller's that encoding/json cannot encode — a

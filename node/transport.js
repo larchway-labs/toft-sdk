@@ -156,6 +156,21 @@ export function refusal(code, message, { hint, ...options } = {}) {
 }
 
 /**
+ * An object store's answer to a URL the platform minted. Coded, because the
+ * request reached the store and was refused — statusless and uncoded is for a
+ * request that never got an answer — with the status beside it, and retryable
+ * only for what the status rule calls a blip: a throttle or a server error. A
+ * 403 used to come back code "" and not retryable, the one combination the
+ * contract says never happens.
+ */
+export function storeRefusal(code, message, status) {
+  return new ToftError(message, {
+    status,
+    body: { code, retryable: status === 429 || status >= 500 },
+  });
+}
+
+/**
  * JSON for a request body, refusing what JSON cannot carry. `JSON.stringify`
  * writes `NaN` and `±Infinity` as `null`, so a document holding one was stored
  * with the number silently gone — data lost without an error. Python's
@@ -420,9 +435,8 @@ export class AppTransport {
         throw new ToftError(`fetching the object: ${err.message}`);
       }
       if (!object.ok) {
-        throw new ToftError(`fetching the object: ${object.statusText}`, {
-          status: object.status,
-        });
+        throw storeRefusal("output_unreadable", `fetching the object: ${object.status} ${object.statusText}`,
+          object.status);
       }
       return new Uint8Array(await object.arrayBuffer());
     }

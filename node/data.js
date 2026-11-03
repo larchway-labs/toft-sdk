@@ -26,7 +26,7 @@
  * other writer's change survives instead of being overwritten.
  */
 
-import { ToftError, transport } from "./transport.js";
+import { ToftError, refusal, transport } from "./transport.js";
 
 /**
  * The document changed under a write that named the version it meant to
@@ -131,6 +131,12 @@ export class Data {
    * thing `{}` papers over.
    */
   async update(mutator, { attempts = DEFAULT_ATTEMPTS, rateLimitTimeout = RATE_LIMIT_TIMEOUT } = {}) {
+    if (typeof rateLimitTimeout !== "number" || !(rateLimitTimeout >= 0)) {
+      // A negative or NaN timeout was taken as 0 without a word.
+      throw refusal("bad_request",
+        `rateLimitTimeout is seconds to wait out rate_limited, 0 or more — got ${String(rateLimitTimeout)}`,
+        { hint: "update(fn, { rateLimitTimeout: 60 })" });
+    }
     let last;
     let conflicts = 0;
     const giveUp = Date.now() + rateLimitTimeout * 1000;

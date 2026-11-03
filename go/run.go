@@ -220,7 +220,7 @@ func (r *Run) WriteOutput(ctx context.Context, body []byte) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		return &Error{Message: fmt.Sprintf("uploading output: %s", resp.Status), Status: resp.StatusCode}
+		return objectStoreRefusal("output_unwritable", fmt.Sprintf("uploading output: %s", resp.Status), resp.StatusCode)
 	}
 	return nil
 }

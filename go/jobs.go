@@ -145,7 +145,9 @@ type JobRun struct {
 	LogsURL   string `json:"logs_url"`
 
 	// Deduplicated is true when this start returned a run that already existed.
-	Deduplicated bool `json:"deduplicated,omitempty"`
+	// Always written, false included: the platform always sends it, and a
+	// Respond body without it read as a field this SDK did not know.
+	Deduplicated bool `json:"deduplicated"`
 
 	headers map[string]string
 	// requestDeadline is the deadline of the request whose viewer started or
@@ -350,8 +352,13 @@ func (r JobRun) Output(ctx context.Context) ([]byte, error) {
 // hand.
 func (r JobRun) OutputJSON(ctx context.Context, v any) (bool, error) {
 	raw, err := r.Output(ctx)
-	if err != nil || len(raw) == 0 {
+	if err != nil || raw == nil {
 		return false, err
+	}
+	if len(raw) == 0 {
+		// Written, and empty — which is not JSON, and not "no output" either.
+		return true, &Error{Body: refusal("not_json", "read the bytes with Output"),
+			Message: fmt.Sprintf("run %s's output is empty, which is not JSON — it was written empty", r.ID)}
 	}
 	if err := json.Unmarshal(raw, v); err != nil {
 		var syntax *json.SyntaxError

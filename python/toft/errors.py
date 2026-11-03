@@ -103,6 +103,19 @@ def refused(code: str, message: str, hint: str | None = None) -> ToftError:
     return ToftError(message, body=body)
 
 
+def store_refused(code: str, message: str, status: int) -> ToftError:
+    """An object store's answer to a URL the platform minted.
+
+    Coded, because the request reached the store and was refused — statusless
+    and uncoded is for a request that never got an answer — with the status
+    beside it, and retryable only for what the status rule calls a blip: a
+    throttle or a server error. A 403 used to come back code ``""`` and not
+    retryable, the one combination the contract says never happens.
+    """
+    return ToftError(message, status=status,
+                     body={"code": code, "retryable": status == 429 or status >= 500})
+
+
 def bad_request(message: str, hint: str | None = None) -> ToftError:
     """:func:`refused` with ``bad_request`` — an argument the SDK will not send."""
     return refused("bad_request", message, hint)

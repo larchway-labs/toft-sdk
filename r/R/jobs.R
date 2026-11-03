@@ -25,6 +25,9 @@ REQUEST_DEADLINE_HEADER <- "X-Toft-Request-Deadline"
 # Every status but these two is final.
 OPEN_RUN_STATUSES <- c("queued", "running")
 
+# A run's fields the platform may leave out when they are empty.
+RUN_NULLABLE_FIELDS <- c("rerun_of", "scheduled_for", "failure_reason")
+
 # How often job_wait() re-reads a run when not told. A variable so a test need
 # not sleep for it.
 WAIT_POLL_SECONDS <- 2
@@ -40,6 +43,13 @@ as_run <- function(body, act_for = NULL, request_deadline = NULL) {
   if (!is.list(body)) {
     body <- list()
   }
+  # The fields the other three SDKs always carry are always here too, NULL
+  # when the platform left them out — so names(run) and str(run) show the same
+  # run in every language — and `done` is the SDK's, as everywhere else.
+  for (field in RUN_NULLABLE_FIELDS) {
+    if (!field %in% names(body)) body[field] <- list(NULL)
+  }
+  body$done <- !is.null(body$status) && !body$status %in% OPEN_RUN_STATUSES
   structure(body, class = "toft_run", act_for = act_for,
             request_deadline = request_deadline)
 }
@@ -254,6 +264,8 @@ job_respond <- function(run, res = NULL, req = NULL) {
     headers[["Content-Type"]] <- "application/json"
     fields <- unclass(run)
     attributes(fields) <- list(names = names(fields))
+    # `done` is the SDK's reading of the status, not a field of the run.
+    fields$done <- NULL
     body <- as.character(jsonlite::toJSON(fields, auto_unbox = TRUE, null = "null"))
   }
 
@@ -485,20 +497,23 @@ job_output <- function(run, json = FALSE) {
     location <- curl::parse_headers_list(resp$headers)[["location"]]
     # A fresh handle: the presigned URL is the whole authorization, and the
     # app's bearer token has no business at the store's host.
-    fetched <- curl::curl_fetch_memory(location, handle = store_handle())
+    fetched <- fetch(location, store_handle(), "fetching the run's output from the store")
     if (fetched$status_code >= 400) {
-      stop(toft_refusal("output_unreadable", sprintf(
+      stop(store_refusal("output_unreadable", sprintf(
         "fetching run %s's output from the store answered %d", run$id, fetched$status_code),
-        retryable = fetched$status_code >= 500))
+        fetched$status_code))
     }
     content <- fetched$content
   }
   if (!json) {
     return(content)
   }
-  # An empty output decodes to NULL, as Node's outputJson() answers null.
+  # An output written empty is not JSON, and not the same answer as no output
+  # at all (NULL, above): not_json, as in the other three SDKs.
   if (length(content) == 0) {
-    return(NULL)
+    stop(toft_refusal("not_json", sprintf(
+      "run %s's output is empty, which is not JSON — it was written empty", run$id),
+      hint = "read the bytes with job_output(run)"))
   }
   text <- rawToChar(content)
   Encoding(text) <- "UTF-8"
@@ -620,7 +635,7 @@ run_write_output <- function(data, json = FALSE) {
     stop(toft_refusal("no_output", "this run has no output location"))
   }
   if (json) {
-    data <- jsonlite::toJSON(data, auto_unbox = TRUE, null = "null")
+    data <- encode_json(data, "run_write_output()'s value")
   }
   if (!is.raw(data)) {
     data <- charToRaw(enc2utf8(paste(as.character(data), collapse = "\n")))
@@ -628,11 +643,10 @@ run_write_output <- function(data, json = FALSE) {
   handle <- store_handle()
   curl::handle_setopt(handle, customrequest = "PUT", post = TRUE,
                       postfieldsize = length(data), postfields = data)
-  resp <- curl::curl_fetch_memory(uri, handle = handle)
+  resp <- fetch(uri, handle, "uploading this run's output")
   if (resp$status_code >= 400) {
-    stop(toft_refusal("output_unwritable", sprintf(
-      "uploading this run's output answered %d", resp$status_code),
-      retryable = resp$status_code >= 500))
+    stop(store_refusal("output_unwritable", sprintf(
+      "uploading this run's output answered %d", resp$status_code), resp$status_code))
   }
   invisible(NULL)
 }

@@ -233,7 +233,14 @@ export class Notify {
    * one for a message whose duplicate would matter.
    */
   async send(kind, text, { title, severity, dedupKey, action, idempotencyKey } = {}) {
-    const name = requireText(kind, "integration");
+    if (typeof kind !== "string" || !kind.trim()) {
+      // The kind is what is empty, not the text: "integration needs some
+      // text" sent the caller looking at the wrong argument.
+      throw refusal("bad_request",
+        `send() needs the integration's kind, such as "teams" — got ${JSON.stringify(kind) ?? String(kind)}`,
+        { hint: 'toft.notify.send("teams", "Nightly load complete")' });
+    }
+    const name = kind;
     if (name === "email") {
       throw refusal(
         "bad_request",

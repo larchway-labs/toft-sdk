@@ -4,6 +4,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
+	"fmt"
 	"net/http"
 	"os"
 	"strconv"
@@ -141,9 +142,19 @@ func CallerFor(headers http.Header) Caller {
 // does. That is the point of the word — the caller may do
 // what it says — and it is why nothing here answers "is a human in front of
 // me". See [Caller.IsPerson].
+//
+// **A word that is not a role panics** with a bad_request [*Error]: AtLeast
+// answers only a bool, and a misspelt rung — "editr", "superuser" — answered
+// false for everybody, silently denying the page. The other three SDKs raise
+// bad_request for the same word. [RoleSystem], [RoleApp] and [RoleUnknown] are
+// roles, and answer false.
 func (c Caller) AtLeast(role string) bool {
-	mine, ok := personRank(c.Role)
 	want, wantOK := personRank(role)
+	if !wantOK && role != RoleSystem && role != RoleApp && role != RoleUnknown {
+		panic(&Error{Body: refusal("bad_request", `pass one of toft.RoleViewer, toft.RoleEditor, toft.RoleOwner or toft.RoleAnonymous`),
+			Message: fmt.Sprintf("%q is not a role — AtLeast takes anonymous, viewer, editor or owner", role)})
+	}
+	mine, ok := personRank(c.Role)
 	return ok && wantOK && mine >= want
 }
 

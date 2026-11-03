@@ -119,6 +119,14 @@ class Caller:
         point of the word — the caller may do what it says — and it is why
         nothing here answers "is a human in front of me". See :attr:`is_person`.
         """
+        if not isinstance(role, str) or (
+                role not in _PERSON_RANK and role not in (ROLE_SYSTEM, ROLE_APP, ROLE_UNKNOWN)):
+            # A misspelt rung answered False for everybody — a page silently
+            # denied — so a word that is not a role is the caller's mistake.
+            from .errors import bad_request
+            raise bad_request(
+                f"{role!r} is not a role — at_least takes anonymous, viewer, editor or owner",
+                hint="c.at_least(toft.ROLE_EDITOR)")
         mine = _PERSON_RANK.get(self.role)
         want = _PERSON_RANK.get(role)
         return mine is not None and want is not None and mine >= want

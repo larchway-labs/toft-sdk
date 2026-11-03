@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Any
 
 from .env import ENV_STORAGE
-from .errors import ToftError, local_file_error
+from .errors import ToftError, local_file_error, store_refused
 from .session import transport
 from .transport import UPLOAD_TIMEOUT
 
@@ -282,8 +282,9 @@ def _send(signed: Any, data: "bytes | None") -> bytes:
         with urllib.request.urlopen(req, timeout=UPLOAD_TIMEOUT) as resp:
             return resp.read()
     except urllib.error.HTTPError as exc:
-        raise ToftError(f"the object store refused the request: {exc.code} {exc.reason}",
-                        status=exc.code) from None
+        raise store_refused("store_refused",
+                            f"the object store refused the request: {exc.code} {exc.reason}",
+                            exc.code) from None
     except urllib.error.URLError as exc:
         raise ToftError(f"cannot reach the object store: {exc.reason}") from None
 
@@ -421,6 +422,15 @@ def _resolve(name: str, folder: str | None, accessor: str) -> Mount:
             f"Name one: toft.{accessor}({name!r}, folder={named[0].folder!r})",
             hint=f"name the folder: toft.{accessor}({name!r}, folder={named[0].folder!r})")
 
+    if not available and not any(
+            os.environ.get(v, "").strip()
+            for v in ("TOFT_API_URL", "TOFT_APP_ID", "TOFT_RUN_ID", "TOFT_SCRATCH_DIR")):
+        # Off the platform there is nothing to map, and "ask an administrator"
+        # would send somebody to one over a laptop — the code Node raises.
+        raise _refused("off_platform",
+            f"{accessor}({name!r}) needs the storage Toft maps into a deployed app "
+            f"({ENV_STORAGE}) — it only resolves in an app running on the platform",
+            hint=f"set {ENV_STORAGE} to a JSON array of mounts to stand one in locally")
     if not available:
         raise _refused("not_mapped",
             f"no storage resource named {name!r}, and this app has none mapped at "

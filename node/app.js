@@ -25,7 +25,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 
-import { ToftError, fetchStore, fileRefusal, onPlatform, require_, transport } from "./transport.js";
+import { ToftError, fetchStore, fileRefusal, onPlatform, require_, storeRefusal, transport } from "./transport.js";
 
 const ENV_STORAGE = "TOFT_STORAGE";
 const ENV_BASE_PATH = "BASE_PATH";
@@ -399,9 +399,8 @@ async function sendSigned(signed, body) {
     throw new ToftError(`cannot reach the object store: ${err.message}`);
   }
   if (!resp.ok) {
-    throw new ToftError(`the object store refused the request: ${resp.status} ${resp.statusText}`, {
-      status: resp.status,
-    });
+    throw storeRefusal("store_refused", `the object store refused the request: ${resp.status} ${resp.statusText}`,
+      resp.status);
   }
   return Buffer.from(await resp.arrayBuffer());
 }

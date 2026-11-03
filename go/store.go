@@ -90,24 +90,34 @@ func (m Mount) Upload(ctx context.Context, source, name string) (string, error) 
 	if err := checkRelativeName(target); err != nil {
 		return "", err
 	}
-	data, err := os.ReadFile(source)
+	// Streamed, never held: the file is read once to hash it and once to send
+	// it, so an upload costs a buffer rather than its size — an app under a
+	// memory limit could not otherwise upload anything larger than that limit.
+	f, err := os.Open(source)
 	if err != nil {
+		return "", localFileError("read", source, err)
+	}
+	defer f.Close()
+	sha, sum := sha256.New(), md5.New() //nolint:gosec
+	size, err := io.Copy(io.MultiWriter(sha, sum), f)
+	if err != nil {
+		return "", localFileError("read", source, err)
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return "", localFileError("read", source, err)
 	}
 	route, err := m.storeRoute("/api/v1/app/store/{slug}/objects", "", nil)
 	if err != nil {
 		return "", err
 	}
-	sha := sha256.Sum256(data)
-	sum := md5.Sum(data) //nolint:gosec
 	var signed signedRequest
 	if err := m.mint(ctx, http.MethodPost, route, map[string]any{
-		"name": target, "size": len(data),
-		"sha256": hex.EncodeToString(sha[:]), "md5": hex.EncodeToString(sum[:]),
+		"name": target, "size": size,
+		"sha256": hex.EncodeToString(sha.Sum(nil)), "md5": hex.EncodeToString(sum.Sum(nil)),
 	}, &signed); err != nil {
 		return "", err
 	}
-	if _, err := sendSigned(ctx, signed, data); err != nil {
+	if _, err := sendSignedReader(ctx, signed, io.LimitReader(f, size), size); err != nil {
 		var e *Error
 		if errors.As(err, &e) && e.Status == http.StatusPreconditionFailed {
 			// `write`, not m.Access: the store signs at the mapping's level
@@ -283,19 +293,30 @@ func escapeName(name string) string {
 // sendSigned carries out a signed request against the object store: the signed
 // headers verbatim, and no Toft header at all.
 func sendSigned(ctx context.Context, signed signedRequest, body []byte) ([]byte, error) {
+	if body == nil {
+		return sendSignedReader(ctx, signed, nil, 0)
+	}
+	return sendSignedReader(ctx, signed, bytes.NewReader(body), int64(len(body)))
+}
+
+// sendSignedReader is sendSigned with the body streamed: size is sent as the
+// Content-Length, which a signed PUT needs and a reader cannot announce.
+func sendSignedReader(ctx context.Context, signed signedRequest, body io.Reader, size int64) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, uploadTimeout)
 	defer cancel()
 	method := signed.Method
 	if method == "" {
 		method = http.MethodGet
 	}
-	var reader io.Reader
-	if body != nil {
-		reader = bytes.NewReader(body)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, signed.URL, reader)
+	req, err := http.NewRequestWithContext(ctx, method, signed.URL, body)
 	if err != nil {
 		return nil, &Error{Message: fmt.Sprintf("the signed request: %v", err), Wrapped: err}
+	}
+	if body != nil {
+		req.ContentLength = size
+		if size == 0 {
+			req.Body = http.NoBody
+		}
 	}
 	for k, v := range signed.Headers {
 		req.Header.Set(k, v)
@@ -306,8 +327,7 @@ func sendSigned(ctx context.Context, signed signedRequest, body []byte) ([]byte,
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		return nil, &Error{Status: resp.StatusCode,
-			Message: fmt.Sprintf("the object store refused the request: %s", resp.Status)}
+		return nil, objectStoreRefusal("store_refused", fmt.Sprintf("the object store refused the request: %s", resp.Status), resp.StatusCode)
 	}
 	return io.ReadAll(resp.Body)
 }

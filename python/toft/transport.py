@@ -33,7 +33,7 @@ from collections.abc import Mapping
 from typing import Any, Iterable
 
 from .env import APP_CONTRACT_VERSION, CONTRACT_HEADER, ENV_API_URL, ENV_APP_TOKEN, app_or_job_token, require
-from .errors import ToftError, bad_request, local_file_error, refused
+from .errors import ToftError, bad_request, local_file_error, refused, store_refused
 
 DEFAULT_TIMEOUT = 30.0
 
@@ -264,9 +264,8 @@ class AppTransport:
             with urllib.request.urlopen(location, timeout=UPLOAD_TIMEOUT) as resp:
                 return resp.read()
         except urllib.error.HTTPError as exc:
-            raise ToftError(
-                f"fetching the object: {exc.reason}", status=exc.code
-            ) from None
+            raise store_refused("output_unreadable",
+                                f"fetching the object: {exc.code} {exc.reason}", exc.code) from None
         except urllib.error.URLError as exc:
             raise ToftError(f"fetching the object: {exc.reason}") from None
 

@@ -43,6 +43,8 @@
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 
+import { refusal } from "./transport.js";
+
 /**
  * The request header the Toft proxy sets on every request it forwards, and
  * on every scheduled firing it makes.
@@ -120,6 +122,13 @@ export class Caller {
    * human in front of me". See `isPerson`.
    */
   atLeast(role) {
+    // A misspelt rung answered false for everybody — a page silently denied —
+    // so a word that is not a role is the caller's mistake, bad_request.
+    if (!Object.hasOwn(PERSON_RANK, role) && ![ROLE_SYSTEM, ROLE_APP, ROLE_UNKNOWN].includes(role)) {
+      throw refusal("bad_request",
+        `${JSON.stringify(role) ?? String(role)} is not a role — atLeast takes anonymous, viewer, editor or owner`,
+        { hint: "c.atLeast(toft.ROLE_EDITOR)" });
+    }
     const mine = PERSON_RANK[this.role];
     const want = PERSON_RANK[role];
     return mine !== undefined && want !== undefined && mine >= want;

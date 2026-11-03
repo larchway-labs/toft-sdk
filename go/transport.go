@@ -261,10 +261,7 @@ func fetchPresigned(ctx context.Context, url string) ([]byte, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		return nil, &Error{
-			Message: fmt.Sprintf("fetching the object: %s", resp.Status),
-			Status:  resp.StatusCode,
-		}
+		return nil, objectStoreRefusal("output_unreadable", fmt.Sprintf("fetching the object: %s", resp.Status), resp.StatusCode)
 	}
 	return io.ReadAll(resp.Body)
 }

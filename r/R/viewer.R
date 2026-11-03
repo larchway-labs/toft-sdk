@@ -168,14 +168,15 @@ constant_time_equal <- function(a, b) {
 #' would need this process to know its own id — a second thing to get wrong for
 #' no property gained.
 #'
-#' Exported for the test that compares this MAC against the platform's over the
-#' same input. App code calls \code{caller_role}.
+#' Internal, as in the other three SDKs: the test that compares this MAC
+#' against the platform's sources it directly. App code calls
+#' \code{caller_role}, which reads the key and the header itself.
 #'
 #' @param key The per-app, per-start key from \code{TOFT_ROLE_KEY}.
 #' @param blob The header value.
 #' @param now Unix seconds to judge the expiry against.
 #' @return One of the six words, or "unknown".
-#' @export
+#' @noRd
 verify_role <- function(key, blob, now = as.numeric(Sys.time())) {
   if (!nzchar(key) || !nzchar(blob)) {
     return(ROLE_UNKNOWN)
@@ -257,10 +258,19 @@ caller_role <- function(request_headers) {
 #'
 #' @param request_headers The incoming request's headers, as a named list or a
 #'   named character vector; see \code{caller_role}.
-#' @param at_least One of "owner", "editor", "viewer".
+#' @param at_least One of "owner", "editor", "viewer" or "anonymous" — or
+#'   "system", "app" or "unknown", which no caller is at least. Any other word
+#'   is refused \code{bad_request}: a misspelt role silently denied everybody.
 #' @return TRUE or FALSE.
 #' @export
 caller_can <- function(request_headers, at_least = ROLE_VIEWER) {
+  if (!is.character(at_least) || length(at_least) != 1 || is.na(at_least) ||
+      !at_least %in% c(MINTED_ROLES, ROLE_UNKNOWN)) {
+    stop(toft_refusal("bad_request", sprintf(
+      "%s is not a role — caller_can() takes one of %s", deparse(at_least),
+      paste(c(names(PERSON_RANK), ROLE_SYSTEM, ROLE_APP, ROLE_UNKNOWN), collapse = ", ")),
+      hint = "caller_can(req, \"editor\")"))
+  }
   # Single brackets: `[[` on a named vector stops with "subscript out of bounds"
   # for a name it lacks, which turned an unknown role into a crash rather than
   # the FALSE every other SDK answers.
