@@ -171,7 +171,10 @@ app_data_update <- function(fn, attempts = 5L) {
   }
   for (i in seq_len(attempts)) {
     cur <- app_data_read()
-    value <- fn(if (is.null(cur$data)) list() else cur$data)
+    # Checked here, under this call's own name: app_data_set() would refuse
+    # the same value naming itself, a call the app never made.
+    value <- as_document(fn(if (is.null(cur$data)) list() else cur$data),
+                         "the function given to app_data_update()")
     written <- tryCatch(
       app_data_set(value, if_version = cur$version),
       toft_error = function(e) {

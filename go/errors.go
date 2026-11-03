@@ -172,5 +172,6 @@ func localWriteError(path string, err error) error {
 // encodeError is a value of the caller's that encoding/json cannot encode — a
 // channel, a func, a NaN. The request was never sent, and it never could be.
 func encodeError(err error) error {
-	return &Error{Body: refusal("bad_request"), Message: fmt.Sprintf("cannot encode the request body: %v", err), Wrapped: err}
+	return &Error{Body: refusal("bad_request",
+		"send only values JSON can hold — maps, slices, strings, finite numbers, booleans and nil; replace NaN and ±Inf with nil or a number"), Message: fmt.Sprintf("cannot encode the request body: %v", err), Wrapped: err}
 }

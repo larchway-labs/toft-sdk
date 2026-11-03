@@ -150,6 +150,9 @@ func (i Identity) InGroup(name string) bool {
 // until an administrator enables it for this app.
 type Viewer struct {
 	blob string
+	// role is the request's verified role, for String alone: the blob is
+	// opaque, and an anonymous visitor carries one too.
+	role string
 
 	// Jobs is the job surface with this viewer attached.
 	Jobs *JobsClient
@@ -158,6 +161,12 @@ type Viewer struct {
 // String never renders the blob: it is a bearer credential for one session, and
 // a log line is exactly where one should not end up.
 func (v *Viewer) String() string {
+	switch v.role {
+	case RoleAnonymous:
+		return "<toft.Viewer (an anonymous visitor; nobody is signed in)>"
+	case RoleUnknown, "":
+		return "<toft.Viewer (the app cannot see who)>"
+	}
 	return "<toft.Viewer (a signed-in person; the app cannot see who)>"
 }
 
@@ -185,7 +194,7 @@ func ViewerFor(headers http.Header) (*Viewer, error) {
 	}
 	// The request's deadline rides along, so a run started for this viewer
 	// knows it is inside a request and refuses a wait the gateway would cut.
-	return &Viewer{blob: blob, Jobs: &JobsClient{
+	return &Viewer{blob: blob, role: CallerFor(headers).Role, Jobs: &JobsClient{
 		headers:  map[string]string{ActForHeader: blob},
 		deadline: requestDeadline(headers),
 	}}, nil

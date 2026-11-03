@@ -632,6 +632,14 @@ def respond(run: JobRun, request: Any = None) -> Any:
         status, body, media = 202, json.dumps(run.to_dict()), "application/json"
     headers = {"Location": location} if location else {}
 
+    if request is None and flask_request is None and _script_app():
+        # Streamlit and marimo run the script over a websocket: there is no
+        # HTTP response for respond() to be, and no request to pass it — the
+        # FastAPI advice below would be advice the app cannot follow.
+        raise bad_request(
+            "respond() is the answer to an HTTP request, and a Streamlit or marimo script "
+            "has none to answer — it runs over a websocket",
+            hint="link to the run's status page instead: st.link_button(\"Follow the run\", run.status_url)")
     if request is None and flask_request is None and _serving_asgi():
         # Without request= a FastAPI handler would return the WSGI tuple, which
         # FastAPI serialises as a JSON array under 200 — a wrong answer that
@@ -651,6 +659,13 @@ def respond(run: JobRun, request: Any = None) -> Any:
     if media:
         headers["Content-Type"] = media
     return body, status, headers
+
+
+def _script_app() -> bool:
+    """Whether this process is a Streamlit or marimo app, which serve the
+    script over a websocket and hand it no HTTP request. Checked before
+    _serving_asgi: Streamlit loads Starlette too."""
+    return "streamlit" in sys.modules or "marimo" in sys.modules
 
 
 def _serving_asgi() -> bool:
