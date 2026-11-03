@@ -120,6 +120,7 @@ import {
   refusal,
   refuseRedirect,
   resetTransport,
+  toJson,
   transport,
 } from "./transport.js";
 import {
@@ -149,6 +150,7 @@ const DEFAULT_TIMEOUT_MS = 30_000;
  * would be the first step towards sharing a credential.
  */
 async function runnerRequest(baseUrl, token, method, path, body, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const json = body === undefined ? undefined : toJson(body);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -162,7 +164,7 @@ async function runnerRequest(baseUrl, token, method, path, body, timeoutMs = DEF
         "Content-Type": "application/json",
         "X-Toft-Runner-Version": CONTRACT_VERSION,
       },
-      body: body === undefined ? undefined : JSON.stringify(body),
+      body: json,
     });
 
     refuseRedirect(resp, path);
@@ -281,9 +283,16 @@ export class Run {
 
   /**
    * Report how far along this run is, 0–100, and optionally what it is doing —
-   * a few words the status page shows under the bar.
+   * a few words the status page shows under the bar. A percent outside 0–100,
+   * or not a number, is `bad_request` before any request.
    */
   async progress(percent, message) {
+    // Refused before any request, as Python, Go and R do: a bar past its end
+    // (or NaN, which Math.round keeps) is the caller's mistake, not progress.
+    if (typeof percent !== "number" || !Number.isFinite(percent) || percent < 0 || percent > 100) {
+      throw refusal("bad_request", `progress is a percentage from 0 to 100, got ${String(percent)}`,
+        { hint: "run.progress(40, \"reading ledgers\")" });
+    }
     const body = { version: CONTRACT_VERSION, percent: Math.round(percent) };
     if (message) body.message = String(message);
     await runnerRequest(this._baseUrl, this._token, "POST", "/api/v1/runner/progress", body);
@@ -326,7 +335,7 @@ export class Run {
   }
 
   async writeOutputJson(value) {
-    await this.writeOutput(JSON.stringify(value));
+    await this.writeOutput(toJson(value));
   }
 }
 
@@ -557,6 +566,8 @@ export {
 };
 
 export default {
+  RUN_STATUSES,
+  TERMINAL_STATUSES,
   app,
   data,
   jobs,

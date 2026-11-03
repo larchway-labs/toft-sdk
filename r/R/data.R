@@ -112,7 +112,23 @@ as_document <- function(value, what) {
       "list is a JSON array and app data holds one JSON object"), what),
       hint = "name every element: list(a = 1, b = 2)"))
   }
+  if (has_non_finite(value)) {
+    # JSON has no NaN or Inf. jsonlite would write them as the strings "NaN"
+    # and "Inf", and the document read back would hold text where a number
+    # was — data changed without an error. Python and Go refuse the same.
+    stop(toft_refusal("bad_request", sprintf(paste0(
+      "%s was given NaN or Inf, which JSON cannot hold — the document would ",
+      "read back with a string in its place"), what),
+      hint = "replace NaN and Inf with NULL or a number before writing"))
+  }
   value
+}
+
+# Whether a value holds NaN or an infinity anywhere inside it. NA is left
+# alone: it is R's missing value, and a missing value has a JSON spelling.
+has_non_finite <- function(x) {
+  if (is.list(x)) return(any(vapply(x, has_non_finite, logical(1))))
+  is.double(x) && any(is.nan(x) | is.infinite(x))
 }
 
 #' Read this app's stored document with its version

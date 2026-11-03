@@ -496,9 +496,21 @@ job_output <- function(run, json = FALSE) {
   if (!json) {
     return(content)
   }
+  # An empty output decodes to NULL, as Node's outputJson() answers null.
+  if (length(content) == 0) {
+    return(NULL)
+  }
   text <- rawToChar(content)
   Encoding(text) <- "UTF-8"
-  jsonlite::fromJSON(text)
+  tryCatch(jsonlite::fromJSON(text), error = function(e) {
+    # The bytes are the run's and they are not JSON — run_write_output()
+    # without json = TRUE. No retry changes them, so the refusal is coded and
+    # final, as the other SDKs' not_json is.
+    stop(toft_refusal("not_json", sprintf(paste0(
+      "run %s's output is not JSON (%s) — it was written without json = TRUE"),
+      run$id, conditionMessage(e)),
+      hint = "read the bytes with job_output(run)"))
+  })
 }
 
 #' Stop a run
@@ -559,8 +571,9 @@ current_run <- function() {
 
 require_run <- function(what) {
   if (!nzchar(trimws(Sys.getenv(ENV_RUN_ID, ""))) || !nzchar(trimws(Sys.getenv(ENV_JOB_TOKEN, "")))) {
-    stop(toft_refusal("no_run", sprintf(
-      "%s works only inside a job: TOFT_RUN_ID and TOFT_JOB_TOKEN are not set", what)))
+    stop(toft_refusal("off_platform", sprintf(
+      "%s works only inside a job: TOFT_RUN_ID and TOFT_JOB_TOKEN are not set", what),
+      hint = "call it from the job's own code; the runner sets those variables"))
   }
 }
 

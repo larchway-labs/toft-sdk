@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 )
@@ -69,6 +70,12 @@ var tokenCache = struct {
 // it expires, so calling it before every request costs one request to Toft an
 // hour. A refusal is an [*Error] carrying the platform's words.
 func AccessToken(ctx context.Context, kind string) (Token, error) {
+	if strings.TrimSpace(kind) == "" {
+		// Refused before any request: an empty kind built the route
+		// /app/tokens/, which the platform answered route_not_found.
+		return Token{}, &Error{Body: refusal("bad_request", `name the integration kind, like toft.AccessToken(ctx, "sharepoint")`),
+			Message: "AccessToken needs the integration kind, got an empty string"}
+	}
 	tokenCache.Lock()
 	cached, ok := tokenCache.m[kind]
 	tokenCache.Unlock()

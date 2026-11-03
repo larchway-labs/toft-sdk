@@ -63,6 +63,12 @@ mounts <- function() {
 #' @return The mount's path.
 #' @export
 mount_path <- function(mount) {
+  if (!is.list(mount) || is.null(mount$name)) {
+    stop(toft_refusal("bad_request", sprintf(paste0(
+      "mount_path() takes a mount from storage_mount() or storage_mounts(), got %s"),
+      if (is.null(mount)) "NULL" else class(mount)[1]),
+      hint = "mount_path(storage_mount(\"reports\"))"))
+  }
   if (is.null(mount$path) || !nzchar(mount$path)) {
     stop(toft_refusal("not_mounted", sprintf(paste0(
       "'%s' is not mounted here — on this install the app reaches it through the platform: ",

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"strconv"
 	"time"
 )
@@ -250,9 +251,15 @@ func (d DataClient) Update(ctx context.Context, mutate func(map[string]any) (map
 	return d.UpdateN(ctx, mutate, DefaultUpdateAttempts)
 }
 
-// rateLimitWaits is how many rate-limit refusals one update waits out, counted
-// apart from its attempts, which are conflicts.
-const rateLimitWaits = 30
+// RateLimitTimeout is how long one update waits out rate-limit refusals in
+// all, apart from its attempts, which are conflicts. A count of waits gave up
+// after ~30 s however long the limiter asked for; the deadline is Python's
+// RATE_LIMIT_TIMEOUT and Node's, so the SDKs keep one promise. A context
+// deadline still ends the wait sooner.
+var RateLimitTimeout = 300 * time.Second
+
+// rateLimitPause is the wait when a refusal names no Retry-After.
+const rateLimitPauseDefault = time.Second
 
 // UpdateN is [DataClient.Update] with the attempt count spelled out.
 func (d DataClient) UpdateN(ctx context.Context, mutate func(map[string]any) (map[string]any, error), attempts int) (Document, error) {
@@ -260,21 +267,28 @@ func (d DataClient) UpdateN(ctx context.Context, mutate func(map[string]any) (ma
 		attempts = 1
 	}
 	var last error
-	conflicts, waits := 0, 0
+	conflicts := 0
+	giveUp := time.Now().Add(RateLimitTimeout)
 	// A rate-limit refusal is waited out and does not spend an attempt:
 	// several writers at once each read and re-read, and on the app's limiter
 	// (burst 10) the lost write was the update's own — the one thing this
-	// method promises not to lose. The waits have a bound of their own; past
-	// it the refusal itself is returned, naming the limiter.
+	// method promises not to lose. Retry-After is honoured, with a little
+	// jitter so writers refused together do not all return in the same
+	// instant; the waits have a deadline of their own, and past it the refusal
+	// itself is returned, naming the limiter.
 	limited := func(err error) bool {
 		e, ok := AsError(err)
-		if !ok || e.Code() != "rate_limited" || waits >= rateLimitWaits {
+		left := time.Until(giveUp)
+		if !ok || e.Code() != "rate_limited" || left <= 0 {
 			return false
 		}
-		waits++
 		wait := e.RetryAfter
 		if wait <= 0 && !e.retryGiven {
-			wait = time.Second
+			wait = rateLimitPauseDefault
+		}
+		wait += time.Duration(rand.Int64N(int64(250 * time.Millisecond)))
+		if wait > left {
+			wait = left
 		}
 		select {
 		case <-ctx.Done():

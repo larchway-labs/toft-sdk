@@ -42,9 +42,13 @@ export class VersionConflict extends ToftError {
 }
 
 /** How many times `update()` re-reads and re-applies before giving up. */
-// How many rate-limit refusals one update waits out, counted apart from its
-// attempts, which are conflicts.
-const RATE_LIMIT_WAITS = 30;
+// How long, in seconds, one update waits out rate-limit refusals in all —
+// apart from its attempts, which are conflicts. A count of waits gave up
+// after ~30 s however long the limiter asked for; the deadline is Python's
+// (RATE_LIMIT_TIMEOUT), so the three SDKs keep the same promise.
+export const RATE_LIMIT_TIMEOUT = 300;
+// The pause when a refusal names no Retry-After.
+const RATE_LIMIT_PAUSE = 1;
 const DEFAULT_ATTEMPTS = 5;
 
 /** One read of the document, with the platform's two facts about it. */
@@ -126,21 +130,24 @@ export class Data {
    * apart from "there was an empty document" — that distinction is the one
    * thing `{}` papers over.
    */
-  async update(mutator, { attempts = DEFAULT_ATTEMPTS } = {}) {
+  async update(mutator, { attempts = DEFAULT_ATTEMPTS, rateLimitTimeout = RATE_LIMIT_TIMEOUT } = {}) {
     let last;
     let conflicts = 0;
-    let waits = 0;
+    const giveUp = Date.now() + rateLimitTimeout * 1000;
     // A rate-limit refusal is waited out and does not spend an attempt:
     // several writers at once each read and re-read, and on the app's limiter
     // (burst 10) the lost write was the update's own — the one thing this
-    // method promises not to lose. The waits have a bound of their own; past
-    // it the refusal itself is thrown, naming the limiter.
+    // method promises not to lose. Retry-After is honoured, with a little
+    // jitter so writers refused together do not all return in the same
+    // instant; the waits have a deadline of their own, and past it the
+    // refusal itself is thrown, naming the limiter.
     const limited = async (err) => {
-      if (!(err instanceof ToftError) || err.code !== "rate_limited" || waits >= RATE_LIMIT_WAITS) {
+      const left = giveUp - Date.now();
+      if (!(err instanceof ToftError) || err.code !== "rate_limited" || left <= 0) {
         throw err;
       }
-      waits++;
-      await new Promise((r) => setTimeout(r, (err.retryAfter ?? 1) * 1000));
+      const pause = Math.max(err.retryAfter ?? RATE_LIMIT_PAUSE, 0) * 1000 + Math.random() * 250;
+      await new Promise((r) => setTimeout(r, Math.min(pause, left)));
     };
     while (conflicts < attempts) {
       let current;

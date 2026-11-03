@@ -45,7 +45,7 @@ import { basename } from "node:path";
 import { readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 
-import { ToftError, fileRefusal, refusal, transport } from "./transport.js";
+import { ToftError, fileRefusal, refusal, toJson, transport } from "./transport.js";
 
 const SLACK_PATH = "/api/v1/app/notify/slack";
 const SLACK_FILE_PATH = "/api/v1/app/notify/slack/file";
@@ -179,7 +179,21 @@ function requireText(value, what) {
 
 /** Accept one address or many, because both are natural to write. */
 function addresses(value, field) {
-  const items = typeof value === "string" ? [value] : Array.from(value ?? []);
+  // One address or a list of them, and nothing else — as Python's: `null`, a
+  // number or an object is `bad_request` naming the shape, not `no_recipient`,
+  // which is the answer for a list that names nobody.
+  if (typeof value !== "string" && !Array.isArray(value) && !(value instanceof Set)) {
+    throw refusal("bad_request",
+      `'${field}' takes an address or a list of addresses, got ${value === null ? "null" : typeof value}`,
+      { hint: `pass ${field}: "someone@example.com" or ${field}: [...]` });
+  }
+  const items = typeof value === "string" ? [value] : Array.from(value);
+  for (const v of items) {
+    if (typeof v !== "string") {
+      throw refusal("bad_request", `'${field}' holds addresses as text, got ${v === null ? "null" : typeof v}`,
+        { hint: `pass ${field}: ["someone@example.com"]` });
+    }
+  }
   const out = items.map((v) => String(v).trim()).filter(Boolean);
   if (items.length && !out.length) {
     throw new ToftError(`'${field}' held only blank addresses`, { body: { code: "bad_request", retryable: false } });
@@ -386,7 +400,7 @@ export class Notify {
     const raw = parts.length
       ? await transport().postMultipart(
           EMAIL_PATH,
-          { payload: JSON.stringify(body) },
+          { payload: toJson(body) },
           parts,
           { idempotencyKey: key },
         )

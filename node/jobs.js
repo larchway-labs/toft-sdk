@@ -89,6 +89,28 @@ export const TERMINAL_STATUSES = new Set([
  * platform answers an unknown word with an empty list — which reads as "no
  * runs", not as a typo.
  */
+/** How many runs one `list()` or `mine()` answers at most, as Python's. */
+export const MAX_LIST_LIMIT = 200;
+
+// A job name or run id the SDK will not send: an empty one reached a route
+// with a hole in it and came back as route_not_found or "declares no job
+// called  ", neither of which names the mistake.
+function requireName(value, what) {
+  if (typeof value !== "string" || !value.trim()) {
+    throw refusal("bad_request", `${what} needs a non-empty name, got ${JSON.stringify(value) ?? String(value)}`);
+  }
+  return value;
+}
+
+function checkLimit(limit) {
+  if (!Number.isInteger(limit) || limit < 1 || limit > MAX_LIST_LIMIT) {
+    throw refusal("bad_request",
+      `limit must be a whole number from 1 to ${MAX_LIST_LIMIT}, got ${String(limit)}`,
+      { hint: `pass limit between 1 and ${MAX_LIST_LIMIT}` });
+  }
+  return limit;
+}
+
 export const RUN_STATUSES = new Set(["queued", "running", ...TERMINAL_STATUSES]);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -367,11 +389,17 @@ export class JobRun {
    * A viewer may cancel a run they started and not somebody else's; the app
    * acting as itself may cancel a run with no person behind it. Cancelling
    * through the wrong one of those rejects rather than quietly doing nothing.
+   *
+   * Resolves with the run read again after the cancel, as R's `job_cancel()`
+   * does: the cancel answers 204 with no body, and this handle's status is
+   * from before it.
    */
   async cancel() {
     await transport().postJson(`${RUNS_PATH}/${encodeURIComponent(this.id)}/cancel`, undefined, {
       headers: this._headers,
     });
+    const raw = await transport().get(`${RUNS_PATH}/${encodeURIComponent(this.id)}`, this._headers);
+    return new JobRun(raw, this._headers, { requestDeadline: this._requestDeadline });
   }
 }
 
@@ -434,6 +462,7 @@ export class Jobs {
         { body: { code: "bad_request", retryable: false, hint: "jobs.start(job, { params: { … } })" } },
       );
     }
+    requireName(job, "jobs.start()");
     const body = {};
     if (params) body.params = params;
     try {
@@ -453,6 +482,7 @@ export class Jobs {
   }
 
   async get(runId) {
+    requireName(runId, "jobs.get()");
     return this.#run(await transport().get(`${RUNS_PATH}/${encodeURIComponent(runId)}`, this._headers));
   }
 
@@ -463,7 +493,7 @@ export class Jobs {
         `list() does not know the status ${JSON.stringify(status)} — one of ${[...RUN_STATUSES].join(", ")}`,
         { hint: `list({ status: "failed" }) — one of ${[...RUN_STATUSES].join(", ")}` });
     }
-    return this.#list("app", { job, status, limit });
+    return this.#list("app", { job, status, limit: checkLimit(limit) });
   }
 
   /**
@@ -498,7 +528,7 @@ export class Jobs {
         { body: { code: "no_viewer", retryable: false, hint: "call it on toft.viewer(req.headers).jobs" } },
       );
     }
-    return this.#list("viewer", { job, limit });
+    return this.#list("viewer", { job, limit: checkLimit(limit) });
   }
 
   async #list(scope, { job, status, limit }) {

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // Ephemeral scratch storage.
@@ -86,16 +87,66 @@ const SessionHeader = "X-Toft-Session"
 func ScratchDir(parts ...string) (string, error) {
 	root := os.Getenv(EnvScratchDir)
 	if root == "" {
-		root = os.TempDir()
+		local, err := localScratchRoot()
+		if err != nil {
+			return "", err
+		}
+		root = local
 	}
 	path, err := underScratch(filepath.Clean(root), "ScratchDir", parts)
 	if err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(path, 0o755); err != nil {
+	if err := os.MkdirAll(path, 0o700); err != nil {
 		return "", &Error{Body: refusal("scratch_unavailable"), Message: fmt.Sprintf("cannot create the scratch directory %s: %v", path, err), Wrapped: err}
 	}
 	return path, nil
+}
+
+// localScratchRoot is off-platform scratch: <tmp>/toft-scratch-<uid>/<app>,
+// 0700 — as the Python and Node SDKs make it. Never the shared temp directory
+// itself, where every user on the machine can read what an app wrote and plant
+// a file or symlink under a name it will use. Per user, so a directory another
+// user created first is not adopted; per app (keyed on the working directory),
+// so two apps in development do not share one. A parent that is not a private
+// directory of this user's is passed over for a fresh MkdirTemp.
+func localScratchRoot() (string, error) {
+	localScratch.Lock()
+	defer localScratch.Unlock()
+	if localScratch.path != "" {
+		if fi, err := os.Lstat(localScratch.path); err == nil && fi.IsDir() {
+			return localScratch.path, nil
+		}
+	}
+	cwd, _ := os.Getwd()
+	sum := sha256.Sum256([]byte(cwd))
+	parent := filepath.Join(os.TempDir(), fmt.Sprintf("toft-scratch-%d", os.Getuid()))
+	root := filepath.Join(parent, hex.EncodeToString(sum[:])[:12])
+	ok := true
+	for _, dir := range []string{parent, root} {
+		if err := os.Mkdir(dir, 0o700); err != nil && !os.IsExist(err) {
+			ok = false
+			break
+		}
+		if !privateDir(dir) {
+			ok = false
+			break
+		}
+	}
+	if !ok {
+		tmp, err := os.MkdirTemp("", "toft-scratch-")
+		if err != nil {
+			return "", &Error{Body: refusal("scratch_unavailable"), Message: fmt.Sprintf("cannot create a private scratch directory: %v", err), Wrapped: err}
+		}
+		root = tmp
+	}
+	localScratch.path = root
+	return root, nil
+}
+
+var localScratch struct {
+	sync.Mutex
+	path string
 }
 
 // underScratch joins parts under base, refusing an absolute part or one whose
@@ -164,4 +215,14 @@ func SessionScratchDir(sessionID string, parts ...string) (string, error) {
 		return "", err
 	}
 	return ScratchDir(append([]string{encoded}, parts...)...)
+}
+
+// privateDir is a real directory (not a symlink), this user's, with no group or
+// other access.
+func privateDir(path string) bool {
+	fi, err := os.Lstat(path)
+	if err != nil || !fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 {
+		return false
+	}
+	return ownedByMe(fi) && fi.Mode().Perm()&0o077 == 0
 }

@@ -26,6 +26,36 @@ notify <- function(kind, ..., idempotency_key = NULL) {
                       hint = "notify(\"email\", to = \"a@example.com\", subject = \"...\", text = \"...\")"))
   }
   body <- list(...)
+  # Checked before the request, as the other SDKs do: a refusal the SDK can
+  # make itself should not cost a rate-limit token and come back as a 400.
+  if ("text" %in% names(body) && !is_text(body$text)) {
+    stop(toft_refusal("bad_request", sprintf("%s text needs some text", kind),
+                      hint = sprintf("notify(\"%s\", text = \"...\")", kind)))
+  }
+  if (identical(kind, "email")) {
+    to <- body$to
+    if (is.list(to) && all(vapply(to, function(a) is.character(a) && length(a) == 1, logical(1)))) {
+      to <- unlist(to, use.names = FALSE)
+    }
+    if (is.null(to) || !is.character(to) || anyNA(to)) {
+      stop(toft_refusal("bad_request", sprintf(
+        "'to' takes an address or a character vector of addresses, got %s",
+        if (is.null(to)) "NULL" else class(to)[1]),
+        hint = "notify(\"email\", to = \"someone@example.com\", subject = \"...\", text = \"...\")"))
+    }
+    if (!any(nzchar(trimws(to)))) {
+      stop(toft_refusal("no_recipient", "email needs at least one recipient in 'to'",
+                        hint = "name who it goes to: pass an address in to (or cc, bcc) - an email has no default recipient"))
+    }
+    for (f in c("subject", "text")) {
+      if (!is_text(body[[f]])) {
+        stop(toft_refusal("bad_request", sprintf("email %s needs some text", f)))
+      }
+    }
+  } else if (kind %in% c("slack", "teams") && !("text" %in% names(body))) {
+    stop(toft_refusal("bad_request", sprintf("%s needs the message as text", kind),
+                      hint = sprintf("notify(\"%s\", text = \"...\")", kind)))
+  }
   # A recipient field is always a list on the wire. toJSON's auto_unbox turns
   # a lone address, to = "a@x", into a JSON string, which the platform refuses
   # (drills skill review 2026-11-02); one address works as several do.
@@ -73,3 +103,5 @@ notify_status <- function(send) {
     blocked = identical(status, "blocked")
   )
 }
+
+is_text <- function(x) is.character(x) && length(x) == 1 && !is.na(x) && nzchar(trimws(x))

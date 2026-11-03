@@ -423,7 +423,20 @@ class JobRun:
         when the run produced none. The reading twin every caller otherwise
         writes as ``json.loads(run.output() or b"null")``."""
         raw = self.output()
-        return json.loads(raw) if raw else None  # None: no output; b"": not JSON either
+        if not raw:
+            return None  # no output, as Node's outputJson answers null
+        try:
+            return json.loads(raw)
+        except ValueError as exc:
+            # The bytes are the run's and they are not JSON — write_output
+            # rather than write_output_json. No retry changes them, so the
+            # refusal is coded and final, as Node's not_json is.
+            raise ToftError(
+                f"run {self.id}'s output is not JSON ({exc}) — it was written with "
+                "write_output rather than write_output_json",
+                body={"code": "not_json", "retryable": False,
+                      "hint": "read the bytes with output()"},
+            ) from None
 
     # --- Logs ---
 
@@ -579,7 +592,17 @@ class Jobs:
         if job is not None and not isinstance(job, str):
             raise bad_request(f"mine() takes a job name, got {type(job).__name__}")
         _check_limit(limit)
-        return self._list(scope="viewer", job=job, status=None, limit=limit)
+        try:
+            return self._list(scope="viewer", job=job, status=None, limit=limit)
+        except ToftError as exc:
+            # The platform's viewer_anonymous hint is about starting; this is a
+            # listing, and an anonymous visitor has no runs of their own to list.
+            if exc.code != "viewer_anonymous":
+                raise
+            body = dict(getattr(exc, "body", None) or {})
+            body["hint"] = ("list the app's runs instead: toft.jobs.list(...) — "
+                            "or ask the visitor to sign in to see their own")
+            raise ToftError(str(exc), status=exc.status, body=body) from None
 
     def _list(self, scope: str, job: str | None, status: str | None, limit: int) -> list[JobRun]:
         query = f"?scope={scope}&limit={int(limit)}"
@@ -609,6 +632,14 @@ def respond(run: JobRun, request: Any = None) -> Any:
         status, body, media = 202, json.dumps(run.to_dict()), "application/json"
     headers = {"Location": location} if location else {}
 
+    if request is None and flask_request is None and _serving_asgi():
+        # Without request= a FastAPI handler would return the WSGI tuple, which
+        # FastAPI serialises as a JSON array under 200 — a wrong answer that
+        # looks like a right one. Refuse instead.
+        raise bad_request(
+            "respond() needs the request in a FastAPI or Starlette app — without it "
+            "the answer would be a tuple FastAPI sends as a 200 JSON array",
+            hint="return toft.jobs.respond(run, request=request)")
     if request is not None and type(request).__module__.split(".")[0] in ("starlette", "fastapi"):
         from starlette.responses import Response
 
@@ -620,6 +651,14 @@ def respond(run: JobRun, request: Any = None) -> Any:
     if media:
         headers["Content-Type"] = media
     return body, status, headers
+
+
+def _serving_asgi() -> bool:
+    """Whether this process is a FastAPI or Starlette app — where a WSGI tuple
+    is never the right return value. FastAPI runs a sync handler in a worker
+    thread, so "is a loop running" would miss it; the framework being loaded
+    with no Flask request in hand is the signal."""
+    return "fastapi" in sys.modules or "starlette" in sys.modules
 
 
 def _typed(exc: ToftError) -> ToftError:

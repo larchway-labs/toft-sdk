@@ -129,10 +129,13 @@ class Viewer:
     is off until an administrator enables it for this app.
     """
 
-    __slots__ = ("_blob", "jobs")
+    __slots__ = ("_blob", "_role", "jobs")
 
-    def __init__(self, blob: str, request_deadline: Any = None) -> None:
+    def __init__(self, blob: str, request_deadline: Any = None, role: str = "unknown") -> None:
         self._blob = blob
+        # The request's verified X-Toft-Role, for __repr__ alone: the blob is
+        # opaque, and an anonymous visitor carries one too.
+        self._role = role
         #: The job surface, with this viewer attached — and the request it came
         #: in on, so a ``wait()`` that would outlive that request refuses.
         self.jobs = Jobs({ACT_FOR_HEADER: blob}, request_deadline)
@@ -148,6 +151,10 @@ class Viewer:
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         # Never the blob itself: it is a bearer credential for one session, and
         # a log line is exactly where one should not end up.
+        if self._role == "anonymous":
+            return "<toft.Viewer (an anonymous visitor; nobody is signed in)>"
+        if self._role == "unknown":
+            return "<toft.Viewer (the app cannot see who)>"
         return "<toft.Viewer (a signed-in person; the app cannot see who)>"
 
 
@@ -181,7 +188,9 @@ def viewer(headers: Mapping[str, Any] | Any) -> Viewer:
                 "hint": "use toft.jobs.start(...) to start it as the app, or toft.jobs.list(...) for its runs",
             },
         )
-    return Viewer(blob, request_deadline(headers))
+    from .caller import caller
+
+    return Viewer(blob, request_deadline(headers), role=caller(headers).role)
 
 
 def _find_header(headers: Any, name: str) -> str:

@@ -156,6 +156,25 @@ export function refusal(code, message, { hint, ...options } = {}) {
 }
 
 /**
+ * JSON for a request body, refusing what JSON cannot carry. `JSON.stringify`
+ * writes `NaN` and `±Infinity` as `null`, so a document holding one was stored
+ * with the number silently gone — data lost without an error. Python's
+ * `allow_nan=False` and Go's encoder refuse it; so does this, as `bad_request`
+ * before any request, naming where the value sat.
+ */
+export function toJson(value) {
+  return JSON.stringify(value, function (key, v) {
+    if (typeof v === "number" && !Number.isFinite(v)) {
+      const where = key === "" ? "the value" : `"${key}"`;
+      throw refusal("bad_request",
+        `${where} is ${v}, which JSON cannot carry — store a number, null or a string instead`,
+        { hint: "replace NaN and Infinity before sending: null, or a string like \"NaN\"" });
+    }
+    return v;
+  });
+}
+
+/**
  * A local file the SDK was asked to read, as a refusal when it cannot be:
  * `not_found` for a path that is not there, `bad_request` for anything else
  * (a directory, a permission). Neither is helped by trying again.
@@ -430,6 +449,9 @@ export class AppTransport {
   }
 
   async #fetch(method, path, body, headers, redirect) {
+    // Serialized before the timer starts: a refusal of the body is not a
+    // network failure, and nothing should be in flight when it is thrown.
+    const json = body === undefined ? undefined : toJson(body);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this._timeoutMs);
     try {
@@ -443,7 +465,7 @@ export class AppTransport {
           ...(body === undefined ? {} : { "Content-Type": "application/json" }),
           ...(headers ?? {}),
         },
-        body: body === undefined ? undefined : JSON.stringify(body),
+        body: json,
       });
     } catch (err) {
       // Our own refusal, raised while composing the request rather than by the

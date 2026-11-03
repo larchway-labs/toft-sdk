@@ -26,7 +26,12 @@
 
 import { inspect } from "node:util";
 
-import { transport } from "./transport.js";
+import { refusal, transport } from "./transport.js";
+
+/** The connection kinds a token is handed out for. */
+export const TOKEN_KINDS = ["sharepoint", "onedrive", "gdrive"];
+/** The ones Microsoft's libraries accept a credential for. */
+export const AZURE_KINDS = ["sharepoint", "onedrive"];
 
 /** How long before expiry, in milliseconds, a cached token is replaced. */
 export const REFRESH_MARGIN_MS = 5 * 60 * 1000;
@@ -73,6 +78,12 @@ const cache = new Map();
  * hands out no tokens, or the token would reach more than files.
  */
 export async function accessToken(kind) {
+  // An empty kind reached POST /api/v1/app/tokens/ and came back as
+  // route_not_found, which names a path rather than the mistake.
+  if (typeof kind !== "string" || !kind.trim()) {
+    throw refusal("bad_request", `accessToken() needs a connection kind, got ${JSON.stringify(kind) ?? String(kind)}`,
+      { hint: `one of: ${TOKEN_KINDS.join(", ")}` });
+  }
   const cached = cache.get(kind);
   if (cached && cached.expiresAt.getTime() - Date.now() > REFRESH_MARGIN_MS) {
     return cached;
@@ -88,6 +99,12 @@ export async function accessToken(kind) {
  * the token is for Graph with whatever the connection was granted.
  */
 export function azureCredential(kind) {
+  // Refused here, as Python's is, rather than on the first getToken deep
+  // inside Microsoft's library: a Google Drive token is not one Graph accepts.
+  if (!AZURE_KINDS.includes(kind)) {
+    throw refusal("bad_request", `azureCredential() is for a Microsoft connection, got ${JSON.stringify(kind) ?? String(kind)}`,
+      { hint: `one of: ${AZURE_KINDS.join(", ")}` + (kind === "gdrive" ? ' — for gdrive use toft.accessToken("gdrive")' : "") });
+  }
   return {
     async getToken() {
       const token = await accessToken(kind);

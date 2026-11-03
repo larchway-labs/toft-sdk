@@ -113,8 +113,11 @@ func (a *AppClient) Refresh() *AppClient {
 // attached. Both spellings are accepted because both are the obvious thing to
 // type, and guessing wrong should not be a silent false.
 func (a *AppClient) Can(ctx context.Context, capability string) (bool, error) {
-	if capability == "" {
-		return false, nil
+	if strings.TrimSpace(capability) == "" {
+		// Refused before any request, as Python's and R's are: an empty
+		// capability is a missing argument, not a capability nobody holds.
+		return false, &Error{Body: refusal("bad_request", `name a capability, like toft.App.Can(ctx, "slack.post")`),
+			Message: "Can needs a capability to ask about, got an empty string"}
 	}
 	info, err := a.Self(ctx)
 	if err != nil {

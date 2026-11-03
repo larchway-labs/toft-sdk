@@ -353,7 +353,19 @@ func (r JobRun) OutputJSON(ctx context.Context, v any) (bool, error) {
 	if err != nil || len(raw) == 0 {
 		return false, err
 	}
-	return true, json.Unmarshal(raw, v)
+	if err := json.Unmarshal(raw, v); err != nil {
+		var syntax *json.SyntaxError
+		if errors.As(err, &syntax) {
+			// The bytes are the run's and they are not JSON — WriteOutput rather
+			// than WriteOutputJSON. No retry changes them, so the refusal is
+			// coded and final, as Node's and Python's not_json are.
+			return true, &Error{Body: refusal("not_json", "read the bytes with Output"),
+				Message: fmt.Sprintf("run %s's output is not JSON (%v) — it was written with WriteOutput rather than WriteOutputJSON", r.ID, err),
+				Wrapped: err}
+		}
+		return true, err
+	}
+	return true, nil
 }
 
 // LogLine is one line of a run's captured output.

@@ -86,6 +86,21 @@ scheduled_for <- function() {
   if (is.na(at)) {
     return(NULL)
   }
+  # The instant is right in any zone; the zone is the schedule's, so a
+  # format() of it reads the tick as the schedule wrote it. The runner sends
+  # only an offset, and R names a whole-hour offset Etc/GMT-N (the sign is
+  # POSIX's, inverted); a half-hour offset has no such zone and stays UTC,
+  # with the text attribute holding what was sent.
+  attr(at, "tzone") <- offset_zone(raw)
   attr(at, "text") <- raw
   at
+}
+
+offset_zone <- function(raw) {
+  m <- regmatches(raw, regexec("([+-])([0-9]{2}):?([0-9]{2})$", raw))[[1]]
+  if (length(m) != 4 || m[4] != "00") return("UTC")
+  hours <- as.integer(m[3])
+  if (hours == 0) return("UTC")
+  # +05:00 is Etc/GMT-5.
+  sprintf("Etc/GMT%s%d", if (m[2] == "+") "-" else "+", hours)
 }
