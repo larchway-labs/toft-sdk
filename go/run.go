@@ -134,7 +134,7 @@ func (r *Run) Params(value any) error {
 		return nil
 	}
 	if err := json.Unmarshal([]byte(raw), value); err != nil {
-		return &Error{Message: fmt.Sprintf("this run's parameters are not the shape this job expects: %v", err), Wrapped: err}
+		return &Error{Body: refusal("bad_request"), Message: fmt.Sprintf("this run's parameters are not the shape this job expects: %v", err), Wrapped: err}
 	}
 	return nil
 }
@@ -171,7 +171,14 @@ func envTime(name string) (time.Time, bool) {
 
 // Progress reports how far along this run is, 0–100, with an optional short
 // message — "loading rows" — shown beside the bar on the run's status page.
+//
+// A percent outside 0–100 is refused here, bad_request, before any request: a
+// bar at 150% or -1% is a bug in the job, and the status page has no honest way
+// to draw it.
 func (r *Run) Progress(ctx context.Context, percent int, message string) error {
+	if percent < 0 || percent > 100 {
+		return badRequest(fmt.Sprintf("progress is a percentage from 0 to 100, got %d", percent))
+	}
 	body := map[string]any{"version": runnerContractVersion, "percent": percent}
 	if message != "" {
 		body["message"] = message
@@ -222,7 +229,7 @@ func (r *Run) WriteOutput(ctx context.Context, body []byte) error {
 func (r *Run) WriteOutputJSON(ctx context.Context, value any) error {
 	encoded, err := json.Marshal(value)
 	if err != nil {
-		return &Error{Message: err.Error(), Wrapped: err}
+		return encodeError(err)
 	}
 	return r.WriteOutput(ctx, encoded)
 }
@@ -230,7 +237,7 @@ func (r *Run) WriteOutputJSON(ctx context.Context, value any) error {
 func (r *Run) call(ctx context.Context, path string, body any) ([]byte, error) {
 	encoded, err := json.Marshal(body)
 	if err != nil {
-		return nil, &Error{Message: err.Error(), Wrapped: err}
+		return nil, encodeError(err)
 	}
 	ctx, cancel := context.WithTimeout(ctx, defaultTimeout)
 	defer cancel()

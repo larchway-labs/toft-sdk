@@ -191,7 +191,8 @@ store <- function(name, folder = NULL) {
 #' The access level is checked here only for a better message. **The mount is
 #' the enforcement** — Mountpoint refuses an operation the grant does not carry.
 #'
-#' @param mount A store, as [store()] returns it.
+#' @param mount A store, as [store()] returns it, or its name — an unmapped
+#'   name is refused `not_mapped`, as [store()] refuses it.
 #' @param source Path to the local file to copy.
 #' @param name What to call it in the store, relative to the mount. Defaults to
 #'   the source file's own name; a leading slash, a backslash or a `..` segment
@@ -199,9 +200,7 @@ store <- function(name, folder = NULL) {
 #' @return The path it was written to, invisibly.
 #' @export
 store_put <- function(mount, source, name = NULL) {
-  if (is.null(mount) || is.null(mount$name)) {
-    stop(toft_refusal("bad_request", "store_put() needs a mount, as store() returns it"))
-  }
+  mount <- as_store(mount, "store_put()")
   # "" is the working directory, and copying there writes into the app's own
   # tree: a store that is not mounted is reached through the platform instead.
   if (is.null(mount$path) || !nzchar(mount$path)) {
@@ -245,16 +244,18 @@ store_put <- function(mount, source, name = NULL) {
 
 #' List one page of a store, over the platform's signed URLs
 #'
-#' @param mount A store, as [store()] returns it.
+#' @param mount A store, as [store()] returns it, or its name — an unmapped
+#'   name is refused `not_mapped`, as [store()] refuses it.
 #' @param path A folder under the mount, `""` for its top.
 #' @param cursor `next_cursor` from the previous page, `""` for the first.
 #' @return A list of `objects`, `prefixes`, `next_cursor` and `access`. Names
 #'   are relative to `path`.
 #' @export
 store_list <- function(mount, path = "", cursor = "") {
+  mount <- as_store(mount, "store_list()")
   if (nzchar(path)) check_relative_name(sub("/$", "", path))
-  page <- toft_request("GET", store_route(mount, "/api/v1/app/store/{slug}/objects"),
-                       query = store_query(mount, list(path = path, cursor = cursor)))
+  page <- store_request("GET", store_route(mount, "/api/v1/app/store/{slug}/objects"),
+                        query = store_query(mount, list(path = path, cursor = cursor)))
   list(
     objects = if (is.null(page$objects)) list() else page$objects,
     prefixes = if (is.null(page$prefixes)) list() else page$prefixes,
@@ -269,19 +270,21 @@ store_list <- function(mount, path = "", cursor = "") {
 #' that says so; `full` replaces. The bytes go straight to the
 #' object store — the platform signs, and never sees them.
 #'
-#' @param mount A store, as [store()] returns it.
+#' @param mount A store, as [store()] returns it, or its name — an unmapped
+#'   name is refused `not_mapped`, as [store()] refuses it.
 #' @param source Path to the local file.
 #' @param name What to call it, relative to the mount. Defaults to its own name.
 #' @return The name it landed under, invisibly.
 #' @export
 store_upload <- function(mount, source, name = NULL) {
+  mount <- as_store(mount, "store_upload()")
   if (missing(source) || !file.exists(source)) {
     stop(toft_refusal("bad_request", sprintf("no such file: %s", if (missing(source)) "" else source)))
   }
   target <- if (is.null(name) || !nzchar(name)) basename(source) else name
   check_relative_name(target)
   data <- readBin(source, "raw", n = file.info(source)$size)
-  signed <- toft_request("POST", store_route(mount, "/api/v1/app/store/{slug}/objects"),
+  signed <- store_request("POST", store_route(mount, "/api/v1/app/store/{slug}/objects"),
                          body = list(name = target, size = length(data),
                                      # paste0: a plain string, not the "hash"
                                      # class jsonlite has no method for.
@@ -305,12 +308,14 @@ store_upload <- function(mount, source, name = NULL) {
 
 #' Download one object from a store
 #'
-#' @param mount A store, as [store()] returns it.
+#' @param mount A store, as [store()] returns it, or its name — an unmapped
+#'   name is refused `not_mapped`, as [store()] refuses it.
 #' @param name The object, relative to the mount.
 #' @param dest Where to write it. `NULL` returns the bytes as a raw vector.
 #' @return The raw bytes, or `dest` invisibly.
 #' @export
 store_download <- function(mount, name, dest = NULL) {
+  mount <- as_store(mount, "store_download()")
   signed <- sign_get(mount, name, FALSE)
   got <- send_signed(signed, NULL, keep = TRUE)
   if (got$status == 404) {
@@ -336,23 +341,27 @@ store_download <- function(mount, name, dest = NULL) {
 #' It lives fifteen minutes, and anyone holding it reads that object until then
 #' — the point for a download link, and the reason not to log one.
 #'
-#' @param mount A store, as [store()] returns it.
+#' @param mount A store, as [store()] returns it, or its name — an unmapped
+#'   name is refused `not_mapped`, as [store()] refuses it.
 #' @param name The object, relative to the mount.
 #' @param attachment `TRUE` makes a browser save it under the object's own name.
 #' @return The URL.
 #' @export
 store_url <- function(mount, name, attachment = FALSE) {
+  mount <- as_store(mount, "store_url()")
   sign_get(mount, name, attachment)$url
 }
 
 #' Delete one object from a store. Needs `full`.
 #'
-#' @param mount A store, as [store()] returns it.
+#' @param mount A store, as [store()] returns it, or its name — an unmapped
+#'   name is refused `not_mapped`, as [store()] refuses it.
 #' @param name The object, relative to the mount.
 #' @export
 store_remove <- function(mount, name) {
+  mount <- as_store(mount, "store_remove()")
   check_relative_name(name)
-  signed <- toft_request("DELETE", store_route(mount, "/api/v1/app/store/{slug}/objects/{name}", name),
+  signed <- store_request("DELETE", store_route(mount, "/api/v1/app/store/{slug}/objects/{name}", name),
                          query = store_query(mount))
   check_signed_status(send_signed(signed, NULL))
   invisible(NULL)
@@ -361,16 +370,46 @@ store_remove <- function(mount, name) {
 sign_get <- function(mount, name, attachment) {
   check_relative_name(name)
   extra <- if (isTRUE(attachment)) list(disposition = "attachment") else list()
-  toft_request("GET", store_route(mount, "/api/v1/app/store/{slug}/objects/{name}", name),
-               query = store_query(mount, extra))
+  store_request("GET", store_route(mount, "/api/v1/app/store/{slug}/objects/{name}", name),
+                query = store_query(mount, extra))
+}
+
+# as_store is the mount every store_*() function works on. A name is resolved
+# with store(), so store_upload("nope", ...) answers not_mapped exactly as
+# store("nope") does; a mount that names no resource is not_mapped too. Before
+# this, a name reached `mount$name` on a character vector — a raw R error — and
+# only store() itself said not_mapped.
+as_store <- function(mount, what) {
+  if (is.character(mount) && length(mount) == 1 && !is.na(mount)) {
+    return(store(mount))
+  }
+  if (!is.list(mount)) {
+    stop(toft_refusal("bad_request", sprintf("%s needs a store, as store() returns it, or its name", what)))
+  }
+  if (is.null(mount$name) || !nzchar(or_empty(mount$name))) {
+    stop(toft_refusal("not_mapped", sprintf("%s was given a mount that names no storage resource", what),
+                      hint = "resolve the store with store(name) first"))
+  }
+  mount
+}
+
+# store_request is toft_request for the store routes, with the platform's
+# store_not_mapped reported as not_mapped — the code store() raises for the same
+# fact, so an app branches on one code whichever side noticed. The platform's
+# own code stays in e$body$code.
+store_request <- function(...) {
+  tryCatch(toft_request(...), toft_error = function(e) {
+    if (identical(e$code, "store_not_mapped")) {
+      e$code <- "not_mapped"
+    }
+    stop(e)
+  })
 }
 
 # `route` is the platform's route, spelled whole so a reader — and the SDK
 # contract test — sees which one each call reaches.
 store_route <- function(mount, route, name = "") {
-  if (is.null(mount) || is.null(mount$name)) {
-    stop(toft_refusal("bad_request", "this needs a store, as store() returns it"))
-  }
+  mount <- as_store(mount, "this")
   if (nzchar(or_empty(mount$kind)) && !identical(mount$kind, "store")) {
     stop(toft_refusal("not_a_store", sprintf(paste0("'%s' is a %s, which is reached at its path — only an object store ",
                         "is reached over signed URLs"), mount$name, mount$kind),

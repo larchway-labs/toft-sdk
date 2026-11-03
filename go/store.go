@@ -52,6 +52,9 @@ type signedRequest struct {
 
 // List reads one page of what is under path ("" for the top).
 func (m Mount) List(ctx context.Context, path, cursor string) (Listing, error) {
+	if err := m.checkMapped(); err != nil {
+		return Listing{}, err
+	}
 	if path != "" {
 		if err := checkRelativeName(strings.TrimSuffix(path, "/")); err != nil {
 			return Listing{}, err
@@ -67,7 +70,7 @@ func (m Mount) List(ctx context.Context, path, cursor string) (Listing, error) {
 	}
 	raw, err := t.get(ctx, route, nil)
 	if err != nil {
-		return Listing{}, err
+		return Listing{}, storeRefusal(err)
 	}
 	var page Listing
 	return page, decode(raw, &page)
@@ -77,6 +80,9 @@ func (m Mount) List(ctx context.Context, path, cursor string) (Listing, error) {
 // returns the name it landed under. At write this creates new objects only,
 // and an existing name is a refusal that says so.
 func (m Mount) Upload(ctx context.Context, source, name string) (string, error) {
+	if err := m.checkMapped(); err != nil {
+		return "", err
+	}
 	target := name
 	if target == "" {
 		target = filepath.Base(source)
@@ -86,7 +92,7 @@ func (m Mount) Upload(ctx context.Context, source, name string) (string, error) 
 	}
 	data, err := os.ReadFile(source)
 	if err != nil {
-		return "", &Error{Message: fmt.Sprintf("cannot read %s: %v", source, err), Wrapped: err}
+		return "", localFileError("read", source, err)
 	}
 	route, err := m.storeRoute("/api/v1/app/store/{slug}/objects", "", nil)
 	if err != nil {
@@ -144,6 +150,9 @@ func (m Mount) URL(ctx context.Context, name string, attachment bool) (string, e
 
 // Remove deletes one object. It needs full.
 func (m Mount) Remove(ctx context.Context, name string) error {
+	if err := m.checkMapped(); err != nil {
+		return err
+	}
 	if err := checkRelativeName(name); err != nil {
 		return err
 	}
@@ -160,6 +169,9 @@ func (m Mount) Remove(ctx context.Context, name string) error {
 }
 
 func (m Mount) signGet(ctx context.Context, name string, attachment bool) (signedRequest, error) {
+	if err := m.checkMapped(); err != nil {
+		return signedRequest{}, err
+	}
 	if err := checkRelativeName(name); err != nil {
 		return signedRequest{}, err
 	}
@@ -190,7 +202,7 @@ func (m Mount) mint(ctx context.Context, method, route string, body any, into *s
 		raw, err = t.get(ctx, route, nil)
 	}
 	if err != nil {
-		return err
+		return storeRefusal(err)
 	}
 	if err := decode(raw, into); err != nil {
 		return err
@@ -206,6 +218,9 @@ func (m Mount) mint(ctx context.Context, method, route string, body any, into *s
 // folder always travels, "" included: it names *this* mapping, so a resource
 // mapped twice is never a question the platform has to ask back.
 func (m Mount) storeRoute(route, name string, query map[string]string) (string, error) {
+	if err := m.checkMapped(); err != nil {
+		return "", err
+	}
 	if m.Kind != "" && m.Kind != "store" {
 		hint := fmt.Sprintf("use the path toft.Storage(%q) resolves, with the ordinary os and filepath calls", m.Name)
 		return "", &Error{Body: refusal("not_a_store", hint), Message: fmt.Sprintf(
@@ -221,6 +236,39 @@ func (m Mount) storeRoute(route, name string, query map[string]string) (string, 
 	route = strings.Replace(route, "{slug}", url.PathEscape(m.Name), 1)
 	route = strings.Replace(route, "{name}", escapeName(name), 1)
 	return route + "?" + params.Encode(), nil
+}
+
+// checkMapped refuses a Mount that names no resource — the zero Mount that
+// [Store] returns beside its not_mapped error — with that same not_mapped, so
+// every operation on an unmapped store answers what Store("nope") answered,
+// rather than a request for an empty slug the platform calls route_not_found.
+func (m Mount) checkMapped() error {
+	if m.Name != "" {
+		return nil
+	}
+	return &Error{Body: refusal("not_mapped", "resolve the store with toft.Store(name) and check its error before using it"),
+		Message: "this Mount names no storage resource — it is the zero value toft.Store returns when " +
+			"the name is not mapped to this app"}
+}
+
+// storeRefusal gives the platform's refusal for a store it does not map to this
+// app the SDK's own code, not_mapped — the code toft.Store("nope") raises
+// locally. The platform says store_not_mapped for the same fact (a Mount built
+// by hand, or one that outlived its mapping), and one fact answering under two
+// codes is two branches every app has to know to write.
+func storeRefusal(err error) error {
+	e, ok := AsError(err)
+	if !ok || e.Code() != "store_not_mapped" {
+		return err
+	}
+	out := *e
+	out.Body = make(map[string]any, len(e.Body)+1)
+	for k, v := range e.Body {
+		out.Body[k] = v
+	}
+	out.Body["code"] = "not_mapped"
+	out.Body["platform_code"] = "store_not_mapped"
+	return &out
 }
 
 // escapeName escapes each segment of an object name and keeps its slashes.

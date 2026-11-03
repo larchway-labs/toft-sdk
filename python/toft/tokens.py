@@ -31,7 +31,13 @@ from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import quote
 
+from .errors import bad_request
 from .session import transport
+
+#: The connection kinds that hand out access tokens.
+TOKEN_KINDS = ("sharepoint", "onedrive", "gdrive")
+#: The ones whose token is Microsoft's — what :func:`azure_credential` accepts.
+AZURE_KINDS = ("sharepoint", "onedrive")
 
 # How long before expiry a cached token is replaced.
 REFRESH_MARGIN = 5 * 60
@@ -96,8 +102,13 @@ def access_token(kind: str) -> Token:
 
     Raises :class:`toft.ToftError` with the platform's own words when the
     connection does not hand out tokens, or the token would carry permissions
-    beyond files.
+    beyond files. An empty kind is refused with ``bad_request`` before any
+    request.
     """
+    if not isinstance(kind, str) or not kind.strip():
+        raise bad_request(
+            f"access_token() needs a connection kind, got {kind!r}",
+            hint="one of: " + ", ".join(TOKEN_KINDS))
     with _lock:
         cached = _cache.get(kind)
         if cached and cached.expires_at.timestamp() - time.time() > REFRESH_MARGIN:
@@ -146,7 +157,17 @@ class AzureCredential:
 
 def azure_credential(kind: str) -> AzureCredential:
     """A credential Microsoft's Python libraries accept, for ``sharepoint`` or
-    ``onedrive``."""
+    ``onedrive``.
+
+    Any other kind is refused with ``bad_request`` here, rather than on the
+    first ``get_token`` deep inside Microsoft's library: a Google Drive token is
+    not one Graph accepts.
+    """
+    if kind not in AZURE_KINDS:
+        raise bad_request(
+            f"azure_credential() is for a Microsoft connection, got {kind!r}",
+            hint="one of: " + ", ".join(AZURE_KINDS)
+            + (" — for gdrive use toft.access_token('gdrive')" if kind == "gdrive" else ""))
     return AzureCredential(kind)
 
 

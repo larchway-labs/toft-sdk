@@ -45,7 +45,7 @@ import { basename } from "node:path";
 import { readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 
-import { ToftError, transport } from "./transport.js";
+import { ToftError, fileRefusal, refusal, transport } from "./transport.js";
 
 const SLACK_PATH = "/api/v1/app/notify/slack";
 const SLACK_FILE_PATH = "/api/v1/app/notify/slack/file";
@@ -125,7 +125,7 @@ class Part {
       try {
         content = await readFile(value);
       } catch (err) {
-        throw new ToftError(`cannot read ${value}: ${err.message}`);
+        throw fileRefusal(err, value);
       }
       return new Part(field, value, content);
     }
@@ -140,9 +140,7 @@ class Part {
         value.type ?? "",
       );
     }
-    throw new ToftError(
-      "an attachment must be a path, a [name, bytes] pair, or {name, content}",
-    );
+    throw refusal("bad_request", "an attachment must be a path, a [name, bytes] pair, or {name, content}");
   }
 }
 
@@ -166,7 +164,10 @@ function guessType(filename) {
 
 function toBytes(value) {
   if (typeof value === "string") return new TextEncoder().encode(value);
-  return value;
+  if (value instanceof Uint8Array || value instanceof ArrayBuffer || ArrayBuffer.isView(value) || value instanceof Blob) {
+    return value;
+  }
+  throw refusal("bad_request", "an attachment's content must be a string or bytes (Buffer, Uint8Array, ArrayBuffer)");
 }
 
 function requireText(value, what) {
@@ -220,8 +221,10 @@ export class Notify {
   async send(kind, text, { title, severity, dedupKey, action, idempotencyKey } = {}) {
     const name = requireText(kind, "integration");
     if (name === "email") {
-      throw new ToftError(
+      throw refusal(
+        "bad_request",
         "email takes recipients and a subject — use toft.notify.email({to, subject, text})",
+        { hint: "toft.notify.email({ to, subject, text })" },
       );
     }
     const body = { text: requireText(text, name) };

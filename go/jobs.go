@@ -324,6 +324,11 @@ func requestDeadline(headers http.Header) time.Time {
 
 // Output fetches this run's output object, or nil if it produced none.
 //
+// **nil and empty are different answers.** nil means the run wrote no output
+// at all — it never called WriteOutput, whether it succeeded or failed. A
+// non-nil, zero-length slice means it wrote one and the output is empty. Test
+// `out == nil` for "no output", not len(out) == 0.
+//
 // Over a presigned URL the platform mints — the app holds no object-store
 // credential, because one that could read this run's output could read every
 // other app's data.
@@ -497,10 +502,28 @@ type StartOptions struct {
 type ListOptions struct {
 	// Job is one job's runs; "" is every job's.
 	Job string
-	// Status is runs in one status; "" is every status.
+	// Status is runs in one status — one of the eight Run* words, anything
+	// else refused bad_request; "" is every status.
 	Status string
-	// Limit is how many, newest first; zero is 50 for List and 20 for Mine.
+	// Limit is how many, newest first; zero is 50 for List and 20 for Mine,
+	// and a negative one is refused bad_request.
 	Limit int
+}
+
+// check refuses a status that is not one of the eight words and a negative
+// limit, locally and bad_request. The platform filters on whatever status it is
+// given, so a typo — "sucess" — answered an empty list that read exactly like
+// "nothing has succeeded".
+func (o ListOptions) check() error {
+	if o.Limit < 0 {
+		return badRequest(fmt.Sprintf("Limit is how many runs to return, and cannot be negative (got %d); zero is the default", o.Limit))
+	}
+	switch o.Status {
+	case "", RunQueued, RunRunning, RunSucceeded, RunFailed, RunTimedOut, RunOutOfMemory, RunCancelled, RunSkipped:
+		return nil
+	}
+	return badRequest(fmt.Sprintf("%q is not a run status — use one of queued, running, succeeded, failed, "+
+		"timed_out, out_of_memory, cancelled or skipped, or \"\" for every status", o.Status))
 }
 
 // JobsClient is the job surface, either as the app or on a person's behalf.
@@ -572,7 +595,10 @@ func (j *JobsClient) Get(ctx context.Context, runID string) (JobRun, error) {
 
 // List is this app's runs, newest first, narrowed by opts.
 func (j *JobsClient) List(ctx context.Context, opts ListOptions) ([]JobRun, error) {
-	if opts.Limit <= 0 {
+	if err := opts.check(); err != nil {
+		return nil, err
+	}
+	if opts.Limit == 0 {
 		opts.Limit = 50
 	}
 	return j.list(ctx, "", opts)
@@ -596,7 +622,10 @@ func (j *JobsClient) Mine(ctx context.Context, opts ListOptions) ([]JobRun, erro
 			Body: map[string]any{"code": "no_viewer", "retryable": false,
 				"hint": "use toft.Jobs.List(...) for every run of this app"}}
 	}
-	if opts.Limit <= 0 {
+	if err := opts.check(); err != nil {
+		return nil, err
+	}
+	if opts.Limit == 0 {
 		opts.Limit = 20
 	}
 	return j.list(ctx, "viewer", opts)

@@ -74,7 +74,7 @@ type Attachment struct {
 func AttachFile(path string) (Attachment, error) {
 	body, err := os.ReadFile(path)
 	if err != nil {
-		return Attachment{}, &Error{Message: fmt.Sprintf("cannot read %s: %v", path, err), Wrapped: err}
+		return Attachment{}, localFileError("read", path, err)
 	}
 	return Attachment{Name: filepath.Base(path), Content: body}, nil
 }
@@ -209,21 +209,39 @@ func (t *transport) follow(ctx context.Context, path string, headers map[string]
 	defer resp.Body.Close()
 
 	switch {
-	case resp.StatusCode == http.StatusNotFound:
-		return nil, nil
 	case resp.StatusCode >= 300 && resp.StatusCode < 400:
 		// fall through to the object store
+	case resp.StatusCode == http.StatusNotFound:
+		// Only "this run wrote nothing" is nothing. Any other 404 — a run id
+		// that does not exist, a route an older install lacks — is a refusal
+		// to report, not an absent output: reading those as nil turned a typo'd
+		// run id into "no output".
+		refused := fromResponse(resp)
+		if code := refused.Code(); code == "" || code == "no_output" {
+			return nil, nil
+		}
+		return nil, refused
 	case resp.StatusCode >= 400:
 		return nil, fromResponse(resp)
 	default:
-		return io.ReadAll(resp.Body)
+		return nonNil(io.ReadAll(resp.Body))
 	}
 
 	location := resp.Header.Get("Location")
 	if location == "" {
 		return nil, &Error{Message: "the platform redirected without a location", Status: resp.StatusCode}
 	}
-	return fetchPresigned(ctx, location)
+	return nonNil(fetchPresigned(ctx, location))
+}
+
+// nonNil keeps an empty body empty rather than nil, so a caller of follow can
+// tell "there is nothing" (nil) from "there is something, and it is zero
+// bytes" — the one distinction an output's reader cannot recover any other way.
+func nonNil(body []byte, err error) ([]byte, error) {
+	if err == nil && body == nil {
+		body = []byte{}
+	}
+	return body, err
 }
 
 // fetchPresigned reads an object over a URL the platform minted. No Toft
@@ -364,7 +382,7 @@ func encode(body any) ([]byte, error) {
 	}
 	out, err := json.Marshal(body)
 	if err != nil {
-		return nil, &Error{Message: fmt.Sprintf("cannot encode the request body: %v", err), Wrapped: err}
+		return nil, encodeError(err)
 	}
 	return out, nil
 }

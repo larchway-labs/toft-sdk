@@ -1,7 +1,7 @@
 # Toft app SDKs
 
 The libraries a Toft app calls back with — who is looking, which role they
-hold, the app's own data, storage, jobs, tasks and notifications — in the four
+hold, the app's own data, storage, jobs and notifications — in the four
 languages Toft serves. This is version **0.9.6**, exactly as that release of
 Toft ships them.
 

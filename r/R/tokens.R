@@ -32,6 +32,10 @@ TOKEN_REFRESH_MARGIN <- 5 * 60
 #'   `item_id`, `label` — where this app was attached).
 #' @export
 access_token <- function(kind) {
+  if (missing(kind) || !is.character(kind) || length(kind) != 1 || is.na(kind) || !nzchar(trimws(kind))) {
+    stop(toft_refusal("bad_request", "access_token() needs the integration kind: \"sharepoint\", \"onedrive\" or \"gdrive\"",
+                      hint = "access_token(\"sharepoint\")"))
+  }
   cached <- .token_cache[[kind]]
   if (!is.null(cached) &&
       as.numeric(cached$expires_at) - as.numeric(Sys.time()) > TOKEN_REFRESH_MARGIN) {

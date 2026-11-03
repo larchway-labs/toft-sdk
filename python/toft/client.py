@@ -39,7 +39,7 @@ from typing import Any, Optional
 # everything in the package needs the error and nothing else should need the
 # jobs client to get it.
 from .caller import ROLE_UNKNOWN
-from .errors import ToftError
+from .errors import ToftError, bad_request
 from .jobs import _parse_time
 from .transport import _from_http_error_or_redirect, _open_without_redirects
 
@@ -133,7 +133,8 @@ class Run:
         if not (base_url and token and run_id):
             raise ToftError(
                 "not running inside a Toft job — TOFT_API_URL, "
-                "TOFT_JOB_TOKEN and TOFT_RUN_ID are set by the runner"
+                "TOFT_JOB_TOKEN and TOFT_RUN_ID are set by the runner",
+                body={"code": "off_platform", "retryable": False},
             )
         return cls(base_url, token, run_id)
 
@@ -167,7 +168,12 @@ class Run:
 
     def progress(self, percent: int, message: Optional[str] = None) -> None:
         """Report how far along this run is, 0–100, and optionally what it is
-        doing — a few words the status page shows under the bar."""
+        doing — a few words the status page shows under the bar.
+
+        ``percent`` outside 0–100 is refused with ``bad_request`` before any
+        request, rather than drawn as a bar past its end."""
+        if isinstance(percent, bool) or not isinstance(percent, (int, float)) or not 0 <= percent <= 100:
+            raise bad_request(f"progress is a percentage from 0 to 100, got {percent!r}")
         body: dict[str, Any] = {"version": RUNNER_CONTRACT_VERSION, "percent": int(percent)}
         if message:
             body["message"] = str(message)
@@ -192,13 +198,25 @@ class Run:
         if not self.output_uri:
             raise ToftError("this run has no output location",
                             body={"code": "no_output", "retryable": False})
-        body = data.encode() if isinstance(data, str) else data
+        if not isinstance(data, (str, bytes, bytearray, memoryview)):
+            raise bad_request(
+                f"write_output takes bytes or text, got {type(data).__name__}",
+                hint="use write_output_json(value) for anything else")
+        body = data.encode() if isinstance(data, str) else bytes(data)
         req = urllib.request.Request(self.output_uri, data=body, method="PUT")
         try:
             with urllib.request.urlopen(req, timeout=DEFAULT_TIMEOUT):
                 return
         except urllib.error.HTTPError as exc:
             raise ToftError(f"uploading output: {exc.reason}", status=exc.code) from None
+        except urllib.error.URLError as exc:
+            # A transport failure — the one kind of statusless error that is
+            # rightly retryable.
+            raise ToftError(f"uploading output: {exc.reason}") from None
 
     def write_output_json(self, value: Any) -> None:
-        self.write_output(json.dumps(value))
+        try:
+            text = json.dumps(value, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise bad_request(f"the output is not JSON-serializable: {exc}") from None
+        self.write_output(text)

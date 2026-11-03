@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Any
 
 from .env import ENV_STORAGE
-from .errors import ToftError
+from .errors import ToftError, local_file_error
 from .session import transport
 from .transport import UPLOAD_TIMEOUT
 
@@ -113,7 +113,10 @@ class Mount:
         src = Path(source)
         target = name or src.name
         _check_relative_name(target)
-        data = src.read_bytes()
+        try:
+            data = src.read_bytes()
+        except OSError as exc:
+            raise local_file_error(src, exc) from None
         signed = transport().post_json(self._route("/api/v1/app/store/{slug}/objects"), {
             "name": target, "size": len(data),
             "sha256": hashlib.sha256(data).hexdigest(),
@@ -225,7 +228,14 @@ class Mount:
 
         destination = self.path / target_name
         destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(src, destination)
+        try:
+            shutil.copyfile(src, destination)
+        except OSError as exc:
+            # The source is the caller's file: coded, never retryable. A
+            # failure writing the mount is the mount's, and raised as itself.
+            if str(exc.filename or "") == str(src):
+                raise local_file_error(src, exc) from None
+            raise
         return destination
 
 
@@ -263,7 +273,7 @@ def _send(signed: Any, data: "bytes | None") -> bytes:
     signed headers are sent verbatim, because they are part of the signature.
     """
     if not isinstance(signed, dict) or not signed.get("url"):
-        raise ToftError("the platform returned no signed URL")
+        raise _refused("unexpected_response", "the platform returned no signed URL")
     req = urllib.request.Request(str(signed["url"]), data=data,
                                  method=str(signed.get("method") or "GET"))
     for key, value in (signed.get("headers") or {}).items():

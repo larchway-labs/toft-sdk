@@ -73,7 +73,7 @@ from collections.abc import Mapping
 from typing import Any, Iterator
 from urllib.parse import quote
 
-from .errors import ToftError
+from .errors import ToftError, bad_request
 from .session import transport
 
 JOBS_PATH = "/api/v1/app/jobs"
@@ -87,6 +87,28 @@ REQUEST_DEADLINE_HEADER = "X-Toft-Request-Deadline"
 TERMINAL_STATUSES = frozenset(
     {"succeeded", "failed", "timed_out", "out_of_memory", "cancelled", "skipped"}
 )
+
+
+#: Every status a run can be listed by — what :meth:`Jobs.list` accepts.
+LISTABLE_STATUSES = frozenset({"queued", "running"}) | TERMINAL_STATUSES
+
+#: The most runs one listing returns; the platform's own ceiling.
+MAX_LIST_LIMIT = 200
+
+
+def _require_name(value: Any, what: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise bad_request(f"{what} needs a non-empty name, got {value!r}")
+    return value
+
+
+def _check_limit(limit: Any) -> int:
+    # bool is an int; True as a limit is a mistake, not 1.
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_LIST_LIMIT:
+        raise bad_request(
+            f"limit must be a whole number from 1 to {MAX_LIST_LIMIT}, got {limit!r}",
+            hint=f"pass limit between 1 and {MAX_LIST_LIMIT}")
+    return limit
 
 
 class QueueFull(ToftError):
@@ -375,8 +397,14 @@ class JobRun:
 
     # --- Output ---
 
-    def output(self) -> bytes:
-        """Fetch this run's output object, or ``b""`` if it produced none.
+    def output(self) -> bytes | None:
+        """Fetch this run's output object, or ``None`` if it produced none.
+
+        ``None`` — the platform's ``no_output``: the run never called
+        ``write_output`` (still queued or running, failed before it got there,
+        or simply wrote nothing) — is told apart from ``b""``, an output the
+        job wrote and left empty. ``run.output() or b"..."`` reads the same
+        either way.
 
         Over a presigned URL the platform mints — the app holds no object-store
         credential, because one that could read this run's output could read
@@ -395,7 +423,7 @@ class JobRun:
         when the run produced none. The reading twin every caller otherwise
         writes as ``json.loads(run.output() or b"null")``."""
         raw = self.output()
-        return json.loads(raw) if raw else None
+        return json.loads(raw) if raw else None  # None: no output; b"": not JSON either
 
     # --- Logs ---
 
@@ -475,6 +503,11 @@ class Jobs:
         re-running the script, so pass one only when the app has a better
         notion of "the same request" than the parameters give.
         """
+        _require_name(job, "start()")
+        if params is not None and not isinstance(params, Mapping):
+            raise bad_request(
+                f"params are a mapping of name to value, got {type(params).__name__}",
+                hint='pass params={"name": value, ...} as [jobs.<name>.params] declares them')
         body: dict[str, Any] = {}
         if params:
             body["params"] = dict(params)
@@ -499,10 +532,23 @@ class Jobs:
         return respond(run, request)
 
     def get(self, run_id: str) -> JobRun:
+        _require_name(run_id, "get()")
         return self._run(transport().get(f"{RUNS_PATH}/{quote(run_id, safe='')}", self._headers))
 
     def list(self, job: str | None = None, status: str | None = None, limit: int = 50) -> list[JobRun]:
-        """Every run of this app, newest first — of one job, in one status, when given."""
+        """Every run of this app, newest first — of one job, in one status, when given.
+
+        ``status`` is one of :data:`LISTABLE_STATUSES` and ``limit`` is 1 to
+        200; anything else is refused with ``bad_request`` rather than
+        answered with an empty list or a silently different page size.
+        """
+        if status is not None and status not in LISTABLE_STATUSES:
+            raise bad_request(
+                f"no run status called {status!r}",
+                hint="one of: " + ", ".join(sorted(LISTABLE_STATUSES)))
+        if job is not None and not isinstance(job, str):
+            raise bad_request(f"list() takes a job name, got {type(job).__name__}")
+        _check_limit(limit)
         return self._list(scope="app", job=job, status=status, limit=limit)
 
     def mine(self, job: str | None = None, limit: int = 20) -> list[JobRun]:
@@ -530,6 +576,9 @@ class Jobs:
                     "hint": "call it on toft.viewer(request.headers).jobs",
                 },
             )
+        if job is not None and not isinstance(job, str):
+            raise bad_request(f"mine() takes a job name, got {type(job).__name__}")
+        _check_limit(limit)
         return self._list(scope="viewer", job=job, status=None, limit=limit)
 
     def _list(self, scope: str, job: str | None, status: str | None, limit: int) -> list[JobRun]:

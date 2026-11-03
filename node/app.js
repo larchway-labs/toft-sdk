@@ -25,7 +25,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 
-import { ToftError, fetchStore, transport } from "./transport.js";
+import { ToftError, fetchStore, fileRefusal, onPlatform, require_, transport } from "./transport.js";
 
 const ENV_STORAGE = "TOFT_STORAGE";
 const ENV_BASE_PATH = "BASE_PATH";
@@ -52,15 +52,18 @@ export class App {
    * as `async slug()` they were a Promise, and a template literal rendered
    * `[object Promise]` into every link built from one. The platform injects
    * both into the process (`TOFT_APP_ID`, `TOFT_APP_SLUG`), so neither needs a
-   * request; off-platform they fall back to a view already fetched, then "".
+   * request. Where neither is set they fall back to a view already fetched,
+   * and failing that throw `off_platform` naming the variable — as Python's
+   * and Go's do, whose `id` asks the platform — rather than answering "", which
+   * built `/apps//` into every link and passed every truthiness check wrongly.
    * `await toft.app.slug` still works, because awaiting a string is the string.
    */
   get id() {
-    return process.env.TOFT_APP_ID || this.#view?.id || "";
+    return process.env.TOFT_APP_ID || this.#view?.id || require_("TOFT_APP_ID");
   }
 
   get slug() {
-    return process.env.TOFT_APP_SLUG || this.#view?.slug || "";
+    return process.env.TOFT_APP_SLUG || this.#view?.slug || require_("TOFT_APP_SLUG");
   }
 
   /** The display name — not in the environment, so a request, once. */
@@ -115,7 +118,13 @@ export class App {
    * guessing wrong should not be a silent false.
    */
   async can(capability) {
-    if (!capability) return false;
+    // Refused rather than false: an empty name is a bug in the caller, and a
+    // silent false reads as "not attached" and sends somebody to an
+    // administrator over nothing.
+    if (typeof capability !== "string" || !capability.trim()) {
+      throw refused("bad_request", "can() needs a capability (`email.send`) or an integration name (`email`)",
+        { hint: 'toft.app.can("email")' });
+    }
     const held = await this.capabilities();
     return held.includes(capability) || held.some((c) => c.startsWith(`${capability}.`));
   }
@@ -207,8 +216,17 @@ export class Mount {
     }
 
     const destination = path.join(this.path, targetName);
-    await fs.mkdir(path.dirname(destination), { recursive: true });
-    await fs.copyFile(source, destination);
+    try {
+      await fs.access(source);
+    } catch (err) {
+      throw fileRefusal(err, source);
+    }
+    try {
+      await fs.mkdir(path.dirname(destination), { recursive: true });
+      await fs.copyFile(source, destination);
+    } catch (err) {
+      throw fileRefusal(err, `${source} to ${destination}`, "copy");
+    }
     return destination;
   }
 
@@ -247,7 +265,12 @@ export class Mount {
   async upload(source, name) {
     const target = name || path.basename(source);
     checkRelativeName(target);
-    const data = await fs.readFile(source);
+    let data;
+    try {
+      data = await fs.readFile(source);
+    } catch (err) {
+      throw fileRefusal(err, source);
+    }
     const signed = await transport().postJson(this.#route("/api/v1/app/store/{slug}/objects"), {
       name: target,
       size: data.length,
@@ -418,17 +441,24 @@ function checkRelativeName(name) {
  *
  * Read from the injected environment, which the platform keeps in step with
  * `GET /api/v1/app/storage` — same shape, so either source resolves to the same
- * answer.
+ * answer. Empty when the variable is absent (off-platform, or nothing mapped);
+ * a value that is not a JSON array is `storage_env_invalid`, as in Python and
+ * R — answering [] there made every mapped resource read as unmapped.
  */
 export function mounts() {
-  const raw = process.env[ENV_STORAGE];
+  const raw = (process.env[ENV_STORAGE] ?? "").trim();
   if (!raw) return [];
+  let parsed;
   try {
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed.map((m) => new Mount(m)) : [];
-  } catch {
-    return [];
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw refused("storage_env_invalid", `${ENV_STORAGE} is not valid JSON: ${err.message}`);
   }
+  if (!Array.isArray(parsed)) {
+    throw refused("storage_env_invalid",
+      `${ENV_STORAGE} should be a JSON array, got ${parsed === null ? "null" : typeof parsed}`);
+  }
+  return parsed.filter((m) => m && typeof m === "object" && !Array.isArray(m)).map((m) => new Mount(m));
 }
 
 /**
@@ -517,6 +547,16 @@ function resolveMount(name, folder, accessor) {
           `${JSON.stringify(named[0].folder)} })`,
       },
     );
+  }
+
+  // Off the platform there is nothing to map, and "ask an administrator" would
+  // send somebody to one over a laptop. Same code as every other call that
+  // needs the platform.
+  if (!all.length && !onPlatform()) {
+    throw refused("off_platform",
+      `${accessor}(${JSON.stringify(name)}) needs the storage Toft maps into a deployed app ` +
+        `(${ENV_STORAGE}) — it only resolves in an app running on the platform`,
+      { offPlatform: true, hint: `set ${ENV_STORAGE} to a JSON array of mounts to stand one in locally` });
   }
 
   // Each name once: a resource mapped at two folders is one resource.

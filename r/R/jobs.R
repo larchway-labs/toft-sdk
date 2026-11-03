@@ -332,8 +332,24 @@ job_mine <- function(request, job = NULL, limit = 20) {
   list_runs(job = job, limit = limit, scope = "viewer", viewer = viewer)
 }
 
+# The eight words a run's status takes.
+RUN_STATUSES <- c("queued", "running", "succeeded", "failed", "timed_out",
+                  "out_of_memory", "cancelled", "skipped")
+
 list_runs <- function(job = NULL, status = NULL, limit = 50, scope = NULL, viewer = NULL) {
-  query <- list(limit = limit)
+  # Checked here, bad_request, because the platform filters on whatever it is
+  # given: a typo'd status answered an empty list that read exactly like
+  # "nothing has succeeded", and limit = -1 went through as asked.
+  if (!is.numeric(limit) || length(limit) != 1 || is.na(limit) || limit < 0 || limit != round(limit)) {
+    stop(toft_refusal("bad_request", sprintf(
+      "limit is how many runs to return, a whole number 0 or more — got %s", deparse(limit))))
+  }
+  if (!is.null(status) && (!is.character(status) || length(status) != 1 || !(status %in% RUN_STATUSES))) {
+    stop(toft_refusal("bad_request", sprintf(
+      "%s is not a run status — use one of %s, or NULL for every status",
+      deparse(status), paste(RUN_STATUSES, collapse = ", "))))
+  }
+  query <- list(limit = format(limit, scientific = FALSE))
   if (!is.null(scope)) query$scope <- scope
   if (!is.null(job)) query$job <- job
   if (!is.null(status)) query$status <- status
@@ -492,13 +508,16 @@ job_output <- function(run, json = FALSE) {
 #' may cancel a run with no person behind it.
 #'
 #' @param run A \code{toft_run}.
-#' @return The run, invisibly.
+#' @return The run as the platform has it after the cancel, read again,
+#'   invisibly — not the handle that was passed in, whose status is from before.
 #' @export
 job_cancel <- function(run) {
   check_run(run, "job_cancel")
   toft_request("POST", paste0("/api/v1/app/job-runs/", utils::URLencode(run$id, reserved = TRUE), "/cancel"),
                extra_headers = run_headers(run))
-  invisible(run)
+  # The cancel answers 204 with no body, so the run is read again: handing
+  # back `run` returned it as it was — still "queued" — after it was cancelled.
+  invisible(job_refresh(run))
 }
 
 # --- inside a job -----------------------------------------------------------
@@ -554,6 +573,10 @@ require_run <- function(what) {
 #' @return NULL, invisibly.
 #' @export
 run_progress <- function(percent, message = NULL) {
+  if (!is.numeric(percent) || length(percent) != 1 || is.na(percent) || percent < 0 || percent > 100) {
+    stop(toft_refusal("bad_request", sprintf(
+      "run_progress() takes a percentage from 0 to 100, got %s", deparse(percent))))
+  }
   require_run("run_progress()")
   body <- list(version = RUNNER_CONTRACT_VERSION, percent = as.integer(percent))
   if (!is.null(message) && nzchar(message)) body$message <- message

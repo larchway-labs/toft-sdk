@@ -86,3 +86,34 @@ class ToftError(RuntimeError):
         decide, not two seconds here.
         """
         return self._status_retryable() and self.retryable
+
+
+def refused(code: str, message: str, hint: str | None = None) -> ToftError:
+    """A refusal this SDK makes itself, before or instead of any request.
+
+    Coded, and never retryable: a bad argument or a missing local file is not
+    helped by trying again. Without a body the status rule reads a statusless
+    error as a transport failure — code ``""`` and retryable — which is the
+    answer an agent's loop retries forever. Only a request that genuinely failed
+    to reach the platform may be statusless *and* uncoded.
+    """
+    body: dict = {"code": code, "retryable": False}
+    if hint:
+        body["hint"] = hint
+    return ToftError(message, body=body)
+
+
+def bad_request(message: str, hint: str | None = None) -> ToftError:
+    """:func:`refused` with ``bad_request`` — an argument the SDK will not send."""
+    return refused("bad_request", message, hint)
+
+
+def local_file_error(path: object, exc: OSError) -> ToftError:
+    """A local file the SDK was asked to read, and could not.
+
+    ``not_found`` for a path that is not there, ``bad_request`` for anything
+    else (a directory, a permission) — both the caller's to fix, neither
+    retryable.
+    """
+    code = "not_found" if isinstance(exc, FileNotFoundError) else "bad_request"
+    return refused(code, f"cannot read {path}: {exc.strerror or exc}")

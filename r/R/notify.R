@@ -18,6 +18,13 @@
 #' @return Invisibly, the platform's response.
 #' @export
 notify <- function(kind, ..., idempotency_key = NULL) {
+  # Checked before the request: a NULL kind built the route /notify/, which
+  # the platform answered route_not_found — a message about routing for what
+  # was a missing argument.
+  if (missing(kind) || !is.character(kind) || length(kind) != 1 || is.na(kind) || !nzchar(trimws(kind))) {
+    stop(toft_refusal("bad_request", "notify() needs the integration kind as its first argument, such as \"email\" or \"slack\"",
+                      hint = "notify(\"email\", to = \"a@example.com\", subject = \"...\", text = \"...\")"))
+  }
   body <- list(...)
   # A recipient field is always a list on the wire. toJSON's auto_unbox turns
   # a lone address, to = "a@x", into a JSON string, which the platform refuses

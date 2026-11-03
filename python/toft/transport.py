@@ -33,7 +33,7 @@ from collections.abc import Mapping
 from typing import Any, Iterable
 
 from .env import APP_CONTRACT_VERSION, CONTRACT_HEADER, ENV_API_URL, ENV_APP_TOKEN, app_or_job_token, require
-from .errors import ToftError
+from .errors import ToftError, bad_request, local_file_error, refused
 
 DEFAULT_TIMEOUT = 30.0
 
@@ -77,7 +77,9 @@ class Part:
         try:
             content = p.read_bytes()
         except OSError as exc:
-            raise ToftError(f"cannot read {p}: {exc.strerror or exc}") from None
+            # The caller's file, not the platform: coded and not retryable —
+            # not_found for a path that is not there, bad_request otherwise.
+            raise local_file_error(p, exc) from None
         return cls(field, p.name, content)
 
     @classmethod
@@ -94,23 +96,45 @@ class Part:
             return cls.from_path(field, value)
         if isinstance(value, tuple) and len(value) == 2:
             name, content = value
-            if isinstance(content, str):
-                content = content.encode()
-            return cls(field, str(name), content)
+            return cls(field, str(name), _content_bytes(content))
         if isinstance(value, Mapping):
-            content = value.get("content", b"")
-            if isinstance(content, str):
-                content = content.encode()
+            content = _content_bytes(value.get("content", b""))
             return cls(
                 field,
                 str(value.get("name", "attachment")),
                 content,
                 str(value.get("type", "")),
             )
-        raise ToftError(
+        raise bad_request(
             "an attachment must be a path, a (filename, bytes) pair, or a "
             f"mapping with 'name' and 'content' — got {type(value).__name__}"
         )
+
+
+def _content_bytes(content: Any) -> bytes:
+    if isinstance(content, str):
+        return content.encode()
+    if isinstance(content, (bytes, bytearray, memoryview)):
+        return bytes(content)
+    raise bad_request(
+        f"an attachment's content must be bytes or text — got {type(content).__name__}")
+
+
+def encode_json(body: Any) -> bytes:
+    """A request body as JSON, or a coded refusal before anything is sent.
+
+    A value ``json`` cannot encode — an object, a set, a datetime — is the
+    caller's to fix, and the raw ``TypeError`` it would otherwise raise carried
+    no code and no hint that nothing reached the platform.
+    """
+    if body is None:
+        return b"{}"
+    try:
+        return json.dumps(body, allow_nan=False).encode()
+    except (TypeError, ValueError) as exc:
+        raise bad_request(
+            f"the request body is not JSON-serializable: {exc}",
+            hint="send only dicts, lists, strings, numbers, booleans and None") from None
 
 
 def encode_multipart(fields: Mapping[str, str], parts: Iterable[Part]) -> tuple[bytes, str]:
@@ -167,7 +191,7 @@ class AppTransport:
         idempotency_key: str | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> Any:
-        data = json.dumps(body).encode() if body is not None else b"{}"
+        data = encode_json(body)
         merged = dict(headers or {})
         merged.update(_idem(idempotency_key))
         return self._attempt(
@@ -187,7 +211,7 @@ class AppTransport:
         starting two runs has nothing to protect here. ``If-Match`` is the
         header that matters instead, and it belongs to the caller.
         """
-        data = json.dumps(body).encode() if body is not None else b"{}"
+        data = encode_json(body)
         return self._attempt(
             "PUT", path, data, "application/json", dict(headers or {}), self._timeout
         )
@@ -195,7 +219,7 @@ class AppTransport:
     def delete(self, path: str, headers: Mapping[str, str] | None = None) -> Any:
         return self._attempt("DELETE", path, None, None, dict(headers or {}), self._timeout)
 
-    def follow(self, path: str, headers: Mapping[str, str] | None = None) -> bytes:
+    def follow(self, path: str, headers: Mapping[str, str] | None = None) -> bytes | None:
         """GET a route that redirects to a store, and return the bytes.
 
         The redirect is followed by hand, deliberately. ``urllib`` copies the
@@ -205,9 +229,10 @@ class AppTransport:
         carries no Toft headers at all, because a presigned URL is already
         the whole authorization.
 
-        Returns ``b""`` when the platform says there is nothing to fetch; a
-        refusal it can explain (an expired artifact, a capability that is off)
-        raises with the platform's own words.
+        Returns ``None`` when the platform says there is nothing to fetch
+        (``no_output``) — distinct from ``b""``, an object that is there and
+        empty. Every other refusal, a 404 for a run that does not exist
+        included, raises with the platform's own words.
         """
         req = urllib.request.Request(f"{self._base}{path}", method="GET")
         req.add_header("Authorization", f"Bearer {self._token}")
@@ -221,13 +246,15 @@ class AppTransport:
                 # No redirect: the route answered directly.
                 return resp.read()
         except urllib.error.HTTPError as exc:
-            if exc.code == 404:
-                return b""
             if exc.code not in (301, 302, 303, 307, 308):
-                raise _from_http_error(exc) from None
+                err = _from_http_error(exc)
+                if err.status == 404 and err.code == "no_output":
+                    return None
+                raise err from None
             location = exc.headers.get("Location", "") if exc.headers else ""
             if not location:
-                raise ToftError("the platform redirected without a location") from None
+                raise refused("unexpected_response",
+                              "the platform redirected without a location") from None
         except urllib.error.URLError as exc:
             raise ToftError(
                 f"cannot reach Toft at {self._base}: {exc.reason}"
@@ -319,7 +346,8 @@ def _from_http_error_or_redirect(exc: urllib.error.HTTPError, path: str) -> Toft
     method did not ask, as the Go SDK says.
     """
     if 300 <= exc.code < 400:
-        return ToftError(f"unexpected redirect from {path}", status=exc.code)
+        return ToftError(f"unexpected redirect from {path}", status=exc.code,
+                         body={"code": "unexpected_redirect", "retryable": False})
     return _from_http_error(exc)
 
 

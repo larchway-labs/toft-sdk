@@ -46,7 +46,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Iterable
 from urllib.parse import quote
 
-from .errors import ToftError
+from .errors import ToftError, bad_request
 from .session import transport
 from .transport import Part
 
@@ -157,8 +157,9 @@ class Notify:
         """
         name = _require_text(kind, "integration")
         if name == "email":
-            raise ToftError(
-                "email takes recipients and a subject — use toft.notify.email(to=…, subject=…, text=…)"
+            raise bad_request(
+                "email takes recipients and a subject — use toft.notify.email(to=…, subject=…, text=…)",
+                hint="use toft.notify.email(to=…, subject=…, text=…)",
             )
         body: dict[str, Any] = {"text": _require_text(text, name)}
         if title:
@@ -422,8 +423,18 @@ def _addresses(value: str | Sequence[str], field_name: str) -> list[str]:
     """Accept one address or many, because both are natural to write."""
     if isinstance(value, str):
         items = [value]
-    else:
+    elif isinstance(value, (list, tuple, set, frozenset)) or (
+        isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray))
+    ):
         items = list(value)
+    else:
+        raise bad_request(
+            f"'{field_name}' takes an address or a list of addresses, got {type(value).__name__}",
+            hint=f"pass {field_name}=\"someone@example.com\" or {field_name}=[...]")
+    for v in items:
+        if not isinstance(v, str):
+            raise bad_request(
+                f"'{field_name}' holds addresses as text, got {type(v).__name__}")
     out = [str(v).strip() for v in items if str(v).strip()]
     if items and not out:
         raise ToftError(f"'{field_name}' held only blank addresses", body={

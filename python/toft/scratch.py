@@ -57,10 +57,11 @@ from __future__ import annotations
 import hashlib
 import os
 import secrets
+import stat
 import tempfile
 from pathlib import Path
 
-from .errors import ToftError
+from .errors import ToftError, bad_request
 
 ENV_SCRATCH_DIR = "TOFT_SCRATCH_DIR"
 
@@ -71,14 +72,109 @@ SESSION_HEADER = "X-Toft-Session"
 def scratch_dir(*parts: str) -> Path:
     """The app's scratch directory, created if missing.
 
-    Optional ``parts`` name a subpath, which is created too. Outside
-    Toft the system temp directory stands in, so app code runs
-    unchanged in local development.
+    Optional ``parts`` name a subpath, which is created too. They are relative
+    to the scratch root and must stay inside it: an absolute part, or one that
+    resolves outside the root (``".."``, a symlink pointing elsewhere), is
+    refused with ``bad_request`` rather than created — a scratch path that can
+    name ``/etc`` is not a scratch path.
+
+    Outside Toft a private directory under the system temp directory stands
+    in — ``toft-scratch-<uid>/<app>``, created ``0700`` — so app code runs
+    unchanged in local development without writing into the shared ``/tmp``.
     """
-    root = Path(os.environ.get(ENV_SCRATCH_DIR) or tempfile.gettempdir())
+    root = _root()
+    for part in parts:
+        if not isinstance(part, (str, os.PathLike)):
+            raise bad_request(
+                f"scratch_dir parts are path segments, got {type(part).__name__}")
+        if os.path.isabs(os.fspath(part)) or os.path.splitdrive(os.fspath(part))[0]:
+            raise bad_request(
+                f"scratch_dir parts are relative to the scratch root, got {os.fspath(part)!r}",
+                hint=_PARTS_HINT)
     path = root.joinpath(*parts)
+    if not _inside(path, root):
+        raise bad_request(
+            f"{os.path.join(*[os.fspath(p) for p in parts])!r} resolves outside the "
+            f"scratch directory", hint=_PARTS_HINT)
     path.mkdir(parents=True, exist_ok=True)
+    # Checked again once it exists: a symlink created between the check and the
+    # mkdir is the one case the first look could not see.
+    if not _inside(path, root):
+        raise bad_request("the scratch path resolves outside the scratch directory",
+                          hint=_PARTS_HINT)
     return path
+
+
+_PARTS_HINT = "name a subdirectory with relative parts and no '..' segments"
+
+
+def _inside(path: Path, root: Path) -> bool:
+    resolved, base = path.resolve(), root.resolve()
+    return resolved == base or base in resolved.parents
+
+
+def _root() -> Path:
+    """``TOFT_SCRATCH_DIR`` on the platform; a private stand-in off it."""
+    configured = os.environ.get(ENV_SCRATCH_DIR)
+    if configured:
+        root = Path(configured)
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+    return _local_root()
+
+
+_local: Path | None = None
+
+
+def _local_root() -> Path:
+    """Off-platform scratch: ``<tmp>/toft-scratch-<uid>/<app>``, ``0700``.
+
+    Never the shared temp directory itself, where every user on the machine can
+    read what an app wrote and plant a file or symlink under a name it will use.
+    Per user, so a directory another user created first is not adopted; per app
+    (keyed on the working directory), so two apps in development do not share
+    one. A parent that is not a real directory owned by this user with no group
+    or other access is not used — a fresh ``mkdtemp`` stands in for the process.
+    """
+    global _local
+    if _local is not None and _local.is_dir():
+        return _local
+    owner = os.getuid() if hasattr(os, "getuid") else _user()
+    parent = Path(tempfile.gettempdir()) / f"toft-scratch-{owner}"
+    app = hashlib.sha256(os.getcwd().encode()).hexdigest()[:12]
+    try:
+        parent.mkdir(mode=0o700, exist_ok=True)
+        if not _private(parent):
+            raise PermissionError(f"{parent} is not a private directory")
+        root = parent / app
+        root.mkdir(mode=0o700, exist_ok=True)
+        if not _private(root):
+            raise PermissionError(f"{root} is not a private directory")
+    except OSError:
+        root = Path(tempfile.mkdtemp(prefix="toft-scratch-"))
+    _local = root
+    return root
+
+
+def _private(path: Path) -> bool:
+    """A real directory (not a symlink), this user's, with no group/other access."""
+    st = os.lstat(path)
+    if not stat.S_ISDIR(st.st_mode):
+        return False
+    if hasattr(os, "getuid") and st.st_uid != os.getuid():
+        return False
+    if os.name == "posix" and st.st_mode & 0o077:
+        return False
+    return True
+
+
+def _user() -> str:
+    try:
+        import getpass
+
+        return getpass.getuser()
+    except Exception:
+        return "user"
 
 
 def new_session_id() -> str:

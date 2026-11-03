@@ -68,6 +68,9 @@ func (m Mount) Put(source, name string) (string, error) {
 	if target == "" {
 		target = filepath.Base(source)
 	}
+	if err := m.checkMapped(); err != nil {
+		return "", err
+	}
 	if err := checkRelativeName(target); err != nil {
 		return "", err
 	}
@@ -83,24 +86,24 @@ func (m Mount) Put(source, name string) (string, error) {
 	}
 
 	destination := filepath.Join(m.Path, filepath.FromSlash(target))
-	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
-		return "", &Error{Message: err.Error(), Wrapped: err}
-	}
 	in, err := os.Open(source)
 	if err != nil {
-		return "", &Error{Message: fmt.Sprintf("cannot read %s: %v", source, err), Wrapped: err}
+		return "", localFileError("read", source, err)
 	}
 	defer in.Close()
+	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+		return "", localWriteError(destination, err)
+	}
 	out, err := os.Create(destination)
 	if err != nil {
-		return "", &Error{Message: fmt.Sprintf("cannot write %s: %v", destination, err), Wrapped: err}
+		return "", localWriteError(destination, err)
 	}
 	if _, err := io.Copy(out, in); err != nil {
 		out.Close()
-		return "", &Error{Message: fmt.Sprintf("cannot write %s: %v", destination, err), Wrapped: err}
+		return "", localWriteError(destination, err)
 	}
 	if err := out.Close(); err != nil {
-		return "", &Error{Message: fmt.Sprintf("cannot write %s: %v", destination, err), Wrapped: err}
+		return "", localWriteError(destination, err)
 	}
 	return destination, nil
 }
@@ -154,7 +157,7 @@ func Mounts() ([]Mount, error) {
 		Folder string `json:"folder"`
 	}
 	if err := json.Unmarshal([]byte(raw), &entries); err != nil {
-		return nil, &Error{Message: fmt.Sprintf("%s is not a JSON array of resources: %v", EnvStorage, err), Wrapped: err}
+		return nil, &Error{Body: refusal("storage_env_invalid"), Message: fmt.Sprintf("%s is not a JSON array of resources: %v", EnvStorage, err), Wrapped: err}
 	}
 	out := make([]Mount, 0, len(entries))
 	for _, entry := range entries {

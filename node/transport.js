@@ -144,6 +144,39 @@ export class ToftError extends Error {
 }
 
 /**
+ * A refusal this SDK makes itself, before or instead of a request: coded, and
+ * never retryable. Without a body the status rule reads a statusless error as a
+ * network failure — code "" and retryable true — and an agent's loop retries a
+ * missing file forever. Only a real transport failure leaves the body empty.
+ */
+export function refusal(code, message, { hint, ...options } = {}) {
+  const body = { code, retryable: false };
+  if (hint) body.hint = hint;
+  return new ToftError(message, { ...options, body });
+}
+
+/**
+ * A local file the SDK was asked to read, as a refusal when it cannot be:
+ * `not_found` for a path that is not there, `bad_request` for anything else
+ * (a directory, a permission). Neither is helped by trying again.
+ */
+export function fileRefusal(err, what, verb = "read") {
+  const code = err?.code === "ENOENT" || err?.code === "ENOTDIR" ? "not_found" : "bad_request";
+  return refusal(code, `cannot ${verb} ${what}: ${err?.message ?? err}`);
+}
+
+/**
+ * Whether this process looks like it runs on Toft at all: the platform
+ * injects at least one of these into every app and every job. Used only to
+ * tell "off the platform" from "on it, with nothing mapped" in a refusal.
+ */
+export function onPlatform() {
+  return ["TOFT_API_URL", "TOFT_APP_ID", "TOFT_RUN_ID", "TOFT_SCRATCH_DIR"].some(
+    (name) => (process.env[name] ?? "").trim() !== "",
+  );
+}
+
+/**
  * Read an injected variable, or throw naming what sets it.
  *
  * The message names the variable rather than describing the situation, because
@@ -342,13 +375,19 @@ export class AppTransport {
    * for one saved option — so the second request carries no Toft headers
    * at all. A presigned URL is already the whole authorization.
    *
-   * Resolves with an empty buffer when the platform says there is nothing to
-   * fetch; a refusal it can explain (an expired artifact) throws with the
-   * platform's own words.
+   * Resolves with `null` when the platform says there is nothing to fetch
+   * (`no_output`); any other refusal — an expired artifact, a run that is not
+   * there — throws with the platform's own words.
    */
   async follow(path, headers) {
     const resp = await this.#fetch("GET", path, undefined, headers, "manual");
-    if (resp.status === 404) return new Uint8Array();
+    if (resp.status === 404) {
+      const err = errorFromText(resp, await resp.text());
+      // An install older than the envelope sent no code; its 404 here meant
+      // the same "nothing was written".
+      if (err.code === "no_output" || err.code === "") return null;
+      throw err;
+    }
     if (resp.status >= 300 && resp.status < 400) {
       const location = resp.headers.get("Location");
       if (!location) {

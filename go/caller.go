@@ -105,6 +105,15 @@ type Caller struct {
 
 // CallerFor reads the role off the request headers the app is serving.
 //
+// **A request made with a personal API key carries its owner's role.** The
+// gateway authorizes a key as the account that minted it, exactly as that
+// account in a browser, so the role here is theirs — "owner" for the app's
+// owner's key — and [Caller.IsPerson] and [Caller.SignedIn] are true. What a
+// key does *not* carry is a viewer: [Who] answers nil and [ViewerFor] fails for
+// the same request, because a key is not a session and asserts no person to
+// the app. The two answer different questions — what the caller may do, and
+// who is looking — and only the second one says "nobody" for a key.
+//
 // Never fails. Off-platform, or on a request that did not come through the
 // gateway, the role is [RoleUnknown] and every [Caller.AtLeast] is false.
 func CallerFor(headers http.Header) Caller {

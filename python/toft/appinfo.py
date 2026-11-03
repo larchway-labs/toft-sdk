@@ -34,6 +34,7 @@ import os
 from typing import Any
 
 from .env import ENV_BASE_PATH
+from .errors import bad_request
 from .session import transport
 
 
@@ -119,10 +120,14 @@ class App:
         Takes either a full capability (``email.send``) or an integration name
         (``email``), which is true when *any* of that integration's actions is
         attached. Both spellings are accepted because both are the obvious
-        thing to type, and guessing wrong should not be a silent false.
+        thing to type, and guessing wrong should not be a silent false — which
+        is also why an empty name is refused (``bad_request``) rather than
+        answered ``False``.
         """
-        if not capability:
-            return False
+        if not isinstance(capability, str) or not capability.strip():
+            raise bad_request(
+                f"can() needs a capability or integration name, got {capability!r}",
+                hint='e.g. toft.app.can("email") or toft.app.can("email.send")')
         held = self.capabilities
         if capability in held:
             return True

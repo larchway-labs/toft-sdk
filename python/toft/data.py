@@ -30,6 +30,7 @@ other writer's change survives instead of being overwritten.
 
 from __future__ import annotations
 
+import random
 import time
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -40,9 +41,15 @@ from .session import transport
 
 # How many times update() re-reads and re-applies before giving up.
 DEFAULT_ATTEMPTS = 5
-# How many rate-limit refusals one update waits out. Counted apart from
-# ``attempts``, which are conflicts: a drained limiter is a queue, not a writer.
-RATE_LIMIT_WAITS = 30
+# How long, in seconds, one update keeps waiting out rate-limit refusals before
+# raising the last one. A deadline rather than a count, and counted apart from
+# ``attempts``, which are conflicts: a drained limiter is a queue, not a writer,
+# and several writers sharing the app's limiter each wait many times at a
+# Retry-After of a second — thirty waits ran out under four threads. Generous on
+# purpose; the write is the one thing update promises not to lose.
+RATE_LIMIT_TIMEOUT = 300.0
+# The pause when a rate_limited refusal carried no Retry-After.
+RATE_LIMIT_PAUSE = 1.0
 
 
 class VersionConflict(ToftError):
@@ -152,25 +159,36 @@ class Data:
 
             toft.data.update(lambda s: s.update(runs=s.get("runs", 0) + 1))
 
+        A ``rate_limited`` refusal does not spend an attempt: it is waited out,
+        honouring ``Retry-After``, for up to :data:`RATE_LIMIT_TIMEOUT` seconds
+        in all, and only then raised as itself.
+
         Use :meth:`read` and :meth:`set` directly when "there was nothing here"
         has to be told apart from "there was an empty document" — that
         distinction is the one thing ``{}`` papers over.
         """
         last: ToftError | None = None
-        conflicts = waits = 0
+        conflicts = 0
         attempts = max(1, attempts)
+        give_up = time.monotonic() + RATE_LIMIT_TIMEOUT
 
         def limited(exc: ToftError) -> bool:
             # A rate-limit refusal is waited out and does not spend an attempt:
             # several writers at once each read and re-read, and on the app's
             # limiter (burst 10) the lost write was the update's own, the one
-            # thing this method promises not to lose.
-            nonlocal last, waits
-            if exc.code != "rate_limited" or waits >= RATE_LIMIT_WAITS:
+            # thing this method promises not to lose. Retry-After is honoured,
+            # with a little jitter so writers refused together do not all come
+            # back in the same instant and be refused together again.
+            nonlocal last
+            if exc.code != "rate_limited":
+                return False
+            left = give_up - time.monotonic()
+            if left <= 0:
                 return False
             last = exc
-            waits += 1
-            time.sleep(exc.retry_after if exc.retry_after is not None else 1)
+            pause = exc.retry_after if exc.retry_after is not None else RATE_LIMIT_PAUSE
+            pause = max(pause, 0.0) + random.uniform(0, 0.25)
+            time.sleep(min(pause, left))
             return True
 
         while conflicts < attempts:

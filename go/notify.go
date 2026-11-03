@@ -276,7 +276,7 @@ func (NotifyClient) Email(ctx context.Context, message EmailMessage) (Send, erro
 		// content type is not a trade worth making.
 		encoded, err := json.Marshal(body)
 		if err != nil {
-			return Send{}, &Error{Message: err.Error(), Wrapped: err}
+			return Send{}, encodeError(err)
 		}
 		raw, err = t.postMultipart(ctx, emailPath, map[string]string{"payload": string(encoded)},
 			"attachment", message.Attachments, key)

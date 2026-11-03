@@ -1,6 +1,7 @@
 package toft
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -59,6 +60,37 @@ type Document struct {
 	UpdatedAt time.Time `json:"updated_at"`
 	// Bytes is its size, as the platform counted it against the cap.
 	Bytes int `json:"bytes"`
+
+	// raw is the document exactly as JSON, for [Document.Decode]: Data has
+	// already been through map[string]any, where every number is a float64.
+	raw json.RawMessage
+}
+
+// Decode unmarshals the document into v — a struct of the app's own, or a
+// map — with its numbers exact, and reports false when nothing is stored.
+//
+// [Document.Data] is a map[string]any, so every number in it is a float64,
+// and an integer past 2^53 is not the integer that was written: 9007199254740993
+// reads back as 9007199254740992. Decode reads the JSON itself, so an int64
+// field gets the integer, and an interface{} gets a [json.Number] rather than
+// a float64:
+//
+//	var settings struct{ Counter int64 }
+//	doc, _ := toft.Data.Read(ctx)
+//	doc.Decode(&settings)
+//
+// Set's answer decodes the same way as Read's, so a write and the read after
+// it agree.
+func (d Document) Decode(v any) (bool, error) {
+	if d.Data == nil || len(d.raw) == 0 {
+		return false, nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(d.raw))
+	dec.UseNumber()
+	if err := dec.Decode(v); err != nil {
+		return true, &Error{Body: refusal("bad_request"), Message: fmt.Sprintf("app data is not the shape asked for: %v", err), Wrapped: err}
+	}
+	return true, nil
 }
 
 // Empty reports whether nothing has been saved, or it was cleared.
@@ -70,15 +102,22 @@ func (d Document) Empty() bool { return d.Data == nil }
 // error.
 func (d *Document) UnmarshalJSON(raw []byte) error {
 	var wire struct {
-		Data      map[string]any `json:"data"`
-		Version   int            `json:"version"`
-		UpdatedAt string         `json:"updated_at"`
-		Bytes     int            `json:"bytes"`
+		Data      json.RawMessage `json:"data"`
+		Version   int             `json:"version"`
+		UpdatedAt string          `json:"updated_at"`
+		Bytes     int             `json:"bytes"`
 	}
 	if err := json.Unmarshal(raw, &wire); err != nil {
 		return err
 	}
-	d.Data, d.Version, d.Bytes = wire.Data, wire.Version, wire.Bytes
+	d.Data, d.raw = nil, nil
+	if len(wire.Data) > 0 && !bytes.Equal(bytes.TrimSpace(wire.Data), []byte("null")) {
+		if err := json.Unmarshal(wire.Data, &d.Data); err != nil {
+			return err
+		}
+		d.raw = wire.Data
+	}
+	d.Version, d.Bytes = wire.Version, wire.Bytes
 	d.UpdatedAt = time.Time{}
 	if wire.UpdatedAt != "" {
 		if when, err := time.Parse(time.RFC3339Nano, wire.UpdatedAt); err == nil {
@@ -92,6 +131,10 @@ func (d *Document) UnmarshalJSON(raw []byte) error {
 type DataClient struct{}
 
 // Get is the document, or nil when the app has never written one.
+//
+// Numbers in it are float64, as encoding/json gives any number in a
+// map[string]any; [Document.Decode] on [DataClient.Read]'s answer reads them
+// exact, into a type of the app's own.
 func (d DataClient) Get(ctx context.Context) (map[string]any, error) {
 	doc, err := d.Read(ctx)
 	if err != nil {
@@ -162,7 +205,21 @@ func (DataClient) write(ctx context.Context, document map[string]any, ifVersion 
 	// to a caller who had just written. Filled from the document that went out
 	// rather than by a second read, which would cost a round trip and could
 	// answer with somebody else's later write.
-	doc.Data = document
+	//
+	// **And it is what a read would answer, not the caller's own map.** Handing
+	// back the map that went out made a write disagree with the read after it:
+	// an int 9007199254740993 stayed exact here and read back as the float64
+	// 9007199254740992. So the document goes through JSON exactly as a read's
+	// does — every number a float64 in Data, and exact through Decode.
+	sent, err := json.Marshal(document)
+	if err != nil {
+		return Document{}, encodeError(err)
+	}
+	doc.raw = sent
+	doc.Data = nil
+	if err := json.Unmarshal(sent, &doc.Data); err != nil {
+		return Document{}, encodeError(err)
+	}
 	return doc, nil
 }
 

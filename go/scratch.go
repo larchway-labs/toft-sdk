@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Ephemeral scratch storage.
@@ -77,14 +78,39 @@ const SessionHeader = "X-Toft-Session"
 // Optional parts name a subpath, which is created too. Outside Toft the
 // system temp directory stands in, so app code runs unchanged in local
 // development — the one call in this package that does not need the platform.
+//
+// The parts stay under the scratch root: an absolute part, or one whose ".."
+// segments climb out of it, is refused bad_request rather than joined — the
+// directory is the app's, and "../escape" would otherwise land in the app's own
+// tree beside its code.
 func ScratchDir(parts ...string) (string, error) {
 	root := os.Getenv(EnvScratchDir)
 	if root == "" {
 		root = os.TempDir()
 	}
-	path := filepath.Join(append([]string{root}, parts...)...)
+	path, err := underScratch(filepath.Clean(root), "ScratchDir", parts)
+	if err != nil {
+		return "", err
+	}
 	if err := os.MkdirAll(path, 0o755); err != nil {
-		return "", &Error{Message: fmt.Sprintf("cannot create the scratch directory %s: %v", path, err), Wrapped: err}
+		return "", &Error{Body: refusal("scratch_unavailable"), Message: fmt.Sprintf("cannot create the scratch directory %s: %v", path, err), Wrapped: err}
+	}
+	return path, nil
+}
+
+// underScratch joins parts under base, refusing an absolute part or one whose
+// ".." segments climb out of base.
+func underScratch(base, call string, parts []string) (string, error) {
+	for _, part := range parts {
+		if filepath.IsAbs(part) || strings.HasPrefix(part, "/") || strings.HasPrefix(part, `\`) {
+			return "", &Error{Body: refusal("bad_request", "pass a path relative to the scratch directory"),
+				Message: fmt.Sprintf("%s takes parts relative to the scratch directory, got the absolute %q", call, part)}
+		}
+	}
+	path := filepath.Join(append([]string{base}, parts...)...)
+	if rel, err := filepath.Rel(base, path); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", &Error{Body: refusal("bad_request", "pass a path that stays under the scratch directory, with no '..' climbing out of it"),
+			Message: fmt.Sprintf("%s(%q) resolves to %s, outside %s", call, strings.Join(parts, "/"), path, base)}
 	}
 	return path, nil
 }
@@ -112,7 +138,7 @@ func ScratchDir(parts ...string) (string, error) {
 func NewSessionID() (string, error) {
 	var raw [16]byte
 	if _, err := rand.Read(raw[:]); err != nil {
-		return "", &Error{Message: fmt.Sprintf("cannot mint a session id: %v", err), Wrapped: err}
+		return "", &Error{Body: refusal("entropy_unavailable"), Message: fmt.Sprintf("cannot mint a session id: %v", err), Wrapped: err}
 	}
 	return base64.RawURLEncoding.EncodeToString(raw[:]), nil
 }
@@ -123,13 +149,19 @@ func NewSessionID() (string, error) {
 // sessionID is whatever the app read from the X-Toft-Session header — or
 // any string of its own choosing, such as a framework's finer per-connection
 // session id. It is hashed before it becomes a directory name, so a malformed or
-// hostile value cannot traverse outside the scratch root.
+// hostile value cannot traverse outside the scratch root. An empty or
+// whitespace-only id is refused bad_request.
 func SessionScratchDir(sessionID string, parts ...string) (string, error) {
-	if sessionID == "" {
+	if strings.TrimSpace(sessionID) == "" {
 		return "", &Error{Body: refusal("bad_request"), Message: "SessionScratchDir needs a non-empty session id — an " +
 			"empty one would silently collapse every session into the same directory"}
 	}
 	sum := sha256.Sum256([]byte(sessionID))
 	encoded := hex.EncodeToString(sum[:])[:32]
+	// The parts are held to the session's own directory, not just the root: a
+	// "../" from one session's directory is another session's.
+	if _, err := underScratch(encoded, "SessionScratchDir", parts); err != nil {
+		return "", err
+	}
 	return ScratchDir(append([]string{encoded}, parts...)...)
 }

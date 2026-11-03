@@ -81,9 +81,9 @@
  */
 
 import { createHash, randomBytes } from "node:crypto";
-import { mkdirSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { lstatSync, mkdirSync } from "node:fs";
+import { tmpdir, userInfo } from "node:os";
+import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { App, Mount, mounts, storage, store } from "./app.js";
 import {
@@ -105,6 +105,7 @@ import {
   Jobs,
   QueueFull,
   REQUEST_DEADLINE_HEADER,
+  RUN_STATUSES,
   TERMINAL_STATUSES,
   respond,
 } from "./jobs.js";
@@ -116,6 +117,7 @@ import {
   ToftError,
   errorFromText,
   fetchStore,
+  refusal,
   refuseRedirect,
   resetTransport,
   transport,
@@ -231,6 +233,7 @@ export class Run {
       throw new ToftError(
         "not running inside a Toft job — TOFT_API_URL, TOFT_JOB_TOKEN " +
           "and TOFT_RUN_ID are set by the runner",
+        { offPlatform: true, body: { code: "off_platform", retryable: false } },
       );
     }
   }
@@ -304,6 +307,14 @@ export class Run {
     if (!this.outputUri) {
       throw new ToftError("this run has no output location", { body: { code: "no_output", retryable: false } });
     }
+    if (
+      !(typeof data === "string" || data instanceof Uint8Array || data instanceof ArrayBuffer ||
+        ArrayBuffer.isView(data) || data instanceof Blob)
+    ) {
+      throw refusal("bad_request",
+        "writeOutput takes a string or bytes — use writeOutputJson(value) for an object",
+        { hint: "run.writeOutputJson(value)" });
+    }
     let resp;
     try {
       resp = await fetchStore(this.outputUri, { method: "PUT", body: data });
@@ -334,14 +345,59 @@ export const SESSION_HEADER = "X-Toft-Session";
  * never backed up, and never shared with another app. The right home for
  * uploads being processed and intermediate results; durable data belongs on
  * a mapped storage resource (`TOFT_STORAGE`), not here. Outside
- * Toft the system temp directory stands in, so app code runs unchanged
- * in local development.
+ * Toft a private directory under the system temp directory stands in —
+ * `toft-scratch-<uid>/<app>`, mode 0700, never the shared temp directory
+ * itself — so app code runs unchanged in local development.
+ *
+ * `parts` are relative and stay inside the root: an absolute part, or one that
+ * resolves outside it (`"..", "..", "etc"`), is `bad_request` before anything
+ * is created.
  */
 export function scratchDir(...parts) {
-  const root = process.env.TOFT_SCRATCH_DIR || tmpdir();
-  const path = join(root, ...parts);
-  mkdirSync(path, { recursive: true });
+  const root = resolve(process.env.TOFT_SCRATCH_DIR || localScratchRoot());
+  for (const part of parts) {
+    if (typeof part !== "string" || isAbsolute(part) || part.includes("\0")) {
+      throw refusal("bad_request",
+        `scratchDir() takes relative path parts, got ${JSON.stringify(part)}`,
+        { hint: 'name a subpath inside the scratch root, e.g. scratchDir("uploads")' });
+    }
+  }
+  const path = resolve(root, ...parts);
+  const rel = relative(root, path);
+  if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+    throw refusal("bad_request",
+      `scratchDir(${parts.map((p) => JSON.stringify(p)).join(", ")}) resolves outside the scratch root`,
+      { hint: "use relative parts with no '..' that climbs out of the scratch root" });
+  }
+  mkdirSync(path, { recursive: true, mode: 0o700 });
   return path;
+}
+
+/**
+ * Off the platform: a directory of this user's own under the system temp
+ * directory, per app (the working directory's name), created 0700. The shared
+ * temp directory is world-writable, so a name another account can predict is
+ * checked rather than trusted: a symlink, or a directory somebody else owns,
+ * is refused instead of written into.
+ */
+function localScratchRoot() {
+  let uid = "user";
+  try {
+    uid = String(process.getuid?.() ?? userInfo().username);
+  } catch {
+    /* no user database; the fixed fallback is still private by mode */
+  }
+  const userRoot = join(tmpdir(), `toft-scratch-${uid}`);
+  mkdirSync(userRoot, { recursive: true, mode: 0o700 });
+  const st = lstatSync(userRoot);
+  const mine = typeof process.getuid !== "function" || st.uid === process.getuid();
+  if (!st.isDirectory() || st.isSymbolicLink() || !mine || (st.mode & 0o077) !== 0) {
+    throw refusal("bad_request",
+      `${userRoot} is not a private directory of this user's — refusing to use it as scratch`,
+      { hint: "remove it, or set TOFT_SCRATCH_DIR to a directory of your own" });
+  }
+  const app = (process.env.TOFT_APP_SLUG || basename(process.cwd()) || "app").replace(/[^A-Za-z0-9._-]/g, "_");
+  return join(userRoot, app === "." || app === ".." ? "app" : app);
 }
 
 /**
@@ -480,6 +536,7 @@ export {
   Notify,
   QueueFull,
   REQUEST_DEADLINE_HEADER,
+  RUN_STATUSES,
   Send,
   TERMINAL_STATUSES,
   Token,

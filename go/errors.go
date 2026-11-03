@@ -2,6 +2,8 @@ package toft
 
 import (
 	"errors"
+	"fmt"
+	"io/fs"
 	"time"
 )
 
@@ -144,4 +146,31 @@ func AsError(err error) (*Error, bool) {
 		return e, true
 	}
 	return nil, false
+}
+
+// localFileError is a failure to read a local file the caller named, as a coded
+// refusal rather than a statusless error — which the status rule reads as a
+// network failure, code "" and retryable, so an agent's loop retried a path
+// that will never exist. A missing file is not_found; anything else (a
+// directory, a permission) is the caller's request being wrong, bad_request.
+// Neither is helped by trying again.
+func localFileError(verb, path string, err error) error {
+	code := "bad_request"
+	if errors.Is(err, fs.ErrNotExist) {
+		code = "not_found"
+	}
+	return &Error{Body: refusal(code), Message: fmt.Sprintf("cannot %s %s: %v", verb, path, err), Wrapped: err}
+}
+
+// localWriteError is a failure to write somewhere on this workload's own
+// filesystem — a full or read-only disk. Coded for the same reason, and not
+// retryable: the same write against the same disk fails the same way.
+func localWriteError(path string, err error) error {
+	return &Error{Body: refusal("write_failed"), Message: fmt.Sprintf("cannot write %s: %v", path, err), Wrapped: err}
+}
+
+// encodeError is a value of the caller's that encoding/json cannot encode — a
+// channel, a func, a NaN. The request was never sent, and it never could be.
+func encodeError(err error) error {
+	return &Error{Body: refusal("bad_request"), Message: fmt.Sprintf("cannot encode the request body: %v", err), Wrapped: err}
 }

@@ -61,7 +61,7 @@
  * which records the new run's `rerunOf`.
  */
 
-import { ToftError, transport } from "./transport.js";
+import { ToftError, refusal, transport } from "./transport.js";
 import { findHeader } from "./viewer.js";
 
 const JOBS_PATH = "/api/v1/app/jobs";
@@ -82,6 +82,14 @@ export const TERMINAL_STATUSES = new Set([
   "cancelled",
   "skipped",
 ]);
+
+/**
+ * Every status a run can be listed by: the two before it ends, and the six it
+ * ends in. `list({ status })` refuses anything else before asking, because the
+ * platform answers an unknown word with an empty list — which reads as "no
+ * runs", not as a typo.
+ */
+export const RUN_STATUSES = new Set(["queued", "running", ...TERMINAL_STATUSES]);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -280,7 +288,9 @@ export class JobRun {
   }
 
   /**
-   * Fetch this run's output object, or an empty buffer if it produced none.
+   * Fetch this run's output object, or `null` if it produced none — a run
+   * that never wrote one, a failed run included. An output that *was* written
+   * empty is an empty Uint8Array, so the two never read alike.
    *
    * Over a presigned URL the platform mints — the app holds no object-store
    * credential, because one that could read this run's output could read every
@@ -301,7 +311,17 @@ export class JobRun {
    */
   async outputJson() {
     const raw = await this.output();
-    return raw && raw.length ? JSON.parse(Buffer.from(raw).toString("utf8")) : null;
+    if (!raw || !raw.length) return null;
+    try {
+      return JSON.parse(Buffer.from(raw).toString("utf8"));
+    } catch (err) {
+      // The bytes are the run's and they are not JSON — writeOutput rather than
+      // writeOutputJson, or a different job's shape. No retry changes them.
+      throw refusal("not_json",
+        `run ${this.id}'s output is not JSON (${err.message}) — it was written with ` +
+          "writeOutput rather than writeOutputJson",
+        { hint: "read the bytes with output()" });
+    }
   }
 
   /** Log lines after `afterSeq`: `{seq, at, stream, line}` each. */
@@ -438,6 +458,11 @@ export class Jobs {
 
   /** Every run of this app, newest first — of one job, in one status, when given. */
   async list({ job, status, limit = 50 } = {}) {
+    if (status !== undefined && status !== null && status !== "" && !RUN_STATUSES.has(status)) {
+      throw refusal("bad_request",
+        `list() does not know the status ${JSON.stringify(status)} — one of ${[...RUN_STATUSES].join(", ")}`,
+        { hint: `list({ status: "failed" }) — one of ${[...RUN_STATUSES].join(", ")}` });
+    }
     return this.#list("app", { job, status, limit });
   }
 

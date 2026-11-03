@@ -31,6 +31,7 @@
  * broken.
  */
 
+import { ROLE_ANONYMOUS, ROLE_UNKNOWN, caller } from "./caller.js";
 import { Jobs, requestDeadline } from "./jobs.js";
 import { ToftError, transport } from "./transport.js";
 
@@ -77,13 +78,16 @@ export const ACT_FOR_HEADER = "X-Toft-Act-For";
  * administrator enables it for this app.
  */
 export class Viewer {
-  constructor(blob, { requestDeadline = null } = {}) {
+  constructor(blob, { requestDeadline = null, role = ROLE_UNKNOWN } = {}) {
     // The job surface, with this viewer attached — and the request it came in
     // on, so a wait() that would outlive that request rejects.
     this.jobs = new Jobs({ [ACT_FOR_HEADER]: blob }, { requestDeadline });
     // Not enumerable, so a console.log of a Viewer cannot spill a bearer
     // credential for somebody's session into a log line.
     Object.defineProperty(this, "_blob", { value: blob, enumerable: false });
+    // The verified X-Toft-Role of the request, for toString alone: the blob is
+    // opaque, and an anonymous visitor carries one too.
+    Object.defineProperty(this, "_role", { value: role, enumerable: false });
   }
 
   /**
@@ -97,6 +101,8 @@ export class Viewer {
   }
 
   toString() {
+    if (this._role === ROLE_ANONYMOUS) return "[Viewer: an anonymous visitor; nobody is signed in]";
+    if (this._role === ROLE_UNKNOWN) return "[Viewer: the app cannot see who]";
     return "[Viewer: a signed-in person; the app cannot see who]";
   }
 }
@@ -205,7 +211,7 @@ export function viewer(headers) {
       },
     );
   }
-  return new Viewer(blob, { requestDeadline: requestDeadline(headers) });
+  return new Viewer(blob, { requestDeadline: requestDeadline(headers), role: caller(headers).role });
 }
 
 /** One header out of whatever the framework calls its header mapping, or "". */
