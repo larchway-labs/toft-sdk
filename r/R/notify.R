@@ -19,6 +19,12 @@
 #' @export
 notify <- function(kind, ..., idempotency_key = NULL) {
   body <- list(...)
+  # A recipient field is always a list on the wire. toJSON's auto_unbox turns
+  # a lone address, to = "a@x", into a JSON string, which the platform refuses
+  # (drills skill review 2026-11-02); one address works as several do.
+  for (f in intersect(c("to", "cc", "bcc"), names(body))) {
+    if (is.character(body[[f]])) body[[f]] <- as.list(body[[f]])
+  }
   invisible(toft_request("POST",
     paste0("/api/v1/app/notify/", utils::URLencode(kind, reserved = TRUE)),
     body = body,
