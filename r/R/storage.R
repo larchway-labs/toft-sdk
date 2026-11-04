@@ -154,9 +154,9 @@ STORAGE_ACCESS <- c("read", "write", "full")
 mount_path <- function(mount) {
   if (!is.list(mount) || is.null(mount$name)) {
     stop(toft_refusal("bad_request", sprintf(paste0(
-      "mount_path() takes a mount from storage_mount() or storage_mounts(), got %s"),
+      "mount_path() takes a mount from storage(), store() or mounts(), got %s"),
       if (is.null(mount)) "NULL" else class(mount)[1]),
-      hint = "mount_path(storage_mount(\"reports\"))"))
+      hint = "mount_path(storage(\"reports\"))"))
   }
   if (is.null(mount$path) || !nzchar(mount$path)) {
     stop(toft_refusal("not_mounted", sprintf(paste0(
