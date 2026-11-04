@@ -171,7 +171,8 @@ app_data_update <- function(fn, attempts = 5L) {
       "app_data_update() takes a function that is given the current document and returns the new one",
       hint = "app_data_update(function(doc) { doc$runs <- (if (is.null(doc$runs)) 0 else doc$runs) + 1; doc })"))
   }
-  if (!is.numeric(attempts) || length(attempts) != 1 || is.na(attempts) || attempts < 1) {
+  if (!is.numeric(attempts) || length(attempts) != 1 || !is.finite(attempts) || attempts < 1 ||
+      attempts != floor(attempts)) {
     stop(toft_refusal("bad_request", "attempts is how many conflicts to retry, at least 1",
                       hint = "pass a whole number of 1 or more, or leave attempts at its default"))
   }

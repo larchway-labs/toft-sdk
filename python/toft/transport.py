@@ -261,7 +261,7 @@ class AppTransport:
             if not location:
                 raise refused("unexpected_response",
                               "the platform redirected without a location",
-                              "check TOFT_API_URL names the install itself, not a proxy or sign-in page in front of it") from None
+                              REDIRECT_HINT) from None
         except urllib.error.URLError as exc:
             raise ToftError(
                 f"cannot reach Toft at {self._base}: {exc.reason}"
@@ -418,6 +418,11 @@ def _open_without_redirects(req: urllib.request.Request, timeout: float):
     return urllib.request.build_opener(_NoRedirects).open(req, timeout=timeout)
 
 
+#: The next step for a redirect the SDK will not follow — R's words, in all four.
+REDIRECT_HINT = ("TOFT_API_URL should be the address Toft set for this app; a redirect usually "
+                 "means it points at a page behind sign-in or at the wrong host")
+
+
 def _from_http_error_or_redirect(exc: urllib.error.HTTPError, path: str) -> ToftError:
     """A refusal in the platform's words, or a redirect named as one.
 
@@ -427,7 +432,7 @@ def _from_http_error_or_redirect(exc: urllib.error.HTTPError, path: str) -> Toft
     if 300 <= exc.code < 400:
         return ToftError(f"unexpected redirect from {path}", status=exc.code,
                          body={"code": "unexpected_redirect", "retryable": False,
-                               "hint": "check TOFT_API_URL names the install itself, not a proxy or sign-in page in front of it"})
+                               "hint": REDIRECT_HINT})
     return _from_http_error(exc)
 
 

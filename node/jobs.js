@@ -448,6 +448,12 @@ export class JobRun {
   async *tail(options) {
     const { pollIntervalMs = 2000 } = takeOptions("tail()", options, ["pollIntervalMs"],
       "for await (const line of run.tail({ pollIntervalMs: 2000 }))");
+    // As wait() has it, before any request (BB-108's sweep): 0 was a loop the
+    // app's own rate limiter ended.
+    if (typeof pollIntervalMs !== "number" || !Number.isFinite(pollIntervalMs) || pollIntervalMs <= 0) {
+      throw refusal("bad_request", `pollIntervalMs is milliseconds between reads, more than 0 — got ${String(pollIntervalMs)}`,
+        { hint: "for await (const line of run.tail({ pollIntervalMs: 2000 }))" });
+    }
     let seq = 0;
     for (;;) {
       let lines, done;
@@ -539,7 +545,9 @@ export function respond(run, req) {
 export class Jobs {
   constructor(headers, { requestDeadline = null } = {}) {
     Object.defineProperty(this, "_headers", { value: headers ?? {}, enumerable: false });
-    this._requestDeadline = requestDeadline;
+    // Not enumerable either: an inspect or JSON.stringify of toft.jobs, or of a
+    // Viewer holding one, has nothing of the app's to show for it (BB-107).
+    Object.defineProperty(this, "_requestDeadline", { value: requestDeadline, enumerable: false });
   }
 
   #run(raw) {

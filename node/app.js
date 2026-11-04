@@ -231,9 +231,9 @@ export class Mount {
   async put(source, name) {
     noMoreArgs("put()", arguments, 2, 'await toft.store("reports").put("nightly.parquet", "2026-08.parquet")');
     checkSource(source, "put()");
-    if (name != null && typeof name !== "string") checkRelativeName(name);
+    if (name != null && typeof name !== "string") checkRelativeName(name, "put");
     const targetName = name ?? path.basename(source);
-    checkRelativeName(targetName);
+    checkRelativeName(targetName, "put");
 
     if (!this.mounted) {
       throw refused("not_mounted",
@@ -278,8 +278,8 @@ export class Mount {
   /** One page of what is under `path`; names are relative to it. */
   async list(listPath = "", options) {
     const { cursor = "" } = takeOptions("list()", options, ["cursor"], 'mount.list("reports/", { cursor })');
-    if (listPath != null && typeof listPath !== "string") checkRelativeName(listPath);
-    if (listPath) checkRelativeName(listPath.replace(/\/$/, ""));
+    if (listPath != null && typeof listPath !== "string") checkRelativeName(listPath, "list");
+    if (listPath) checkRelativeName(listPath.replace(/\/$/, ""), "list");
     const page =
       (await transport().get(
         this.#route("/api/v1/app/store/{slug}/objects", "", { path: listPath, cursor }),
@@ -306,9 +306,9 @@ export class Mount {
   async upload(source, name) {
     noMoreArgs("upload()", arguments, 2, 'await toft.store("reports").upload("nightly.parquet", "2026-08.parquet")');
     checkSource(source, "upload()");
-    if (name != null && typeof name !== "string") checkRelativeName(name);
+    if (name != null && typeof name !== "string") checkRelativeName(name, "upload");
     const target = name || path.basename(source);
-    checkRelativeName(target);
+    checkRelativeName(target, "upload");
     let data;
     try {
       data = await fs.readFile(source);
@@ -346,7 +346,7 @@ export class Mount {
   async download(name) {
     noMoreArgs("download()", arguments, 1, 'await toft.store("reports").download("2026-08.parquet")');
     try {
-      return await sendSigned(await this.#signGet(name, false));
+      return await sendSigned(await this.#signGet(name, false, "download"));
     } catch (err) {
       if (err instanceof ToftError && err.status === 404) {
         // The URL is signed for any name; the store is what answers that
@@ -369,18 +369,18 @@ export class Mount {
   async url(name, options) {
     const { attachment = false } = takeOptions("url()", options, ["attachment"],
       'mount.url("report.pdf", { attachment: true })');
-    return (await this.#signGet(name, attachment)).url;
+    return (await this.#signGet(name, attachment, "url")).url;
   }
 
   /** Delete one object. Needs `full`. */
   async remove(name) {
     noMoreArgs("remove()", arguments, 1, 'await toft.store("reports").remove("2026-08.parquet")');
-    checkRelativeName(name);
+    checkRelativeName(name, "remove");
     await sendSigned(await transport().del(this.#route("/api/v1/app/store/{slug}/objects/{name}", name)));
   }
 
-  async #signGet(name, attachment) {
-    checkRelativeName(name);
+  async #signGet(name, attachment, call) {
+    checkRelativeName(name, call);
     const query = attachment ? { disposition: "attachment" } : {};
     return (
       (await transport().get(this.#route("/api/v1/app/store/{slug}/objects/{name}", name, query))) ?? {}
@@ -475,13 +475,26 @@ async function sendSigned(signed, body) {
  * segment here would write into the app's own filesystem — over its code, in the
  * worst case — rather than into the storage it was given.
  */
-function checkRelativeName(name) {
+// The example each call's not-a-string refusal names, so the hint is the call
+// that was made — download(5) was told to call upload() (BB-109's sweep).
+const NAME_EXAMPLE = {
+  upload: 'upload("local.csv", "reports/2026-08.csv")',
+  put: 'put("local.csv", "reports/2026-08.csv")',
+  download: 'download("reports/2026-08.csv")',
+  url: 'url("reports/2026-08.csv")',
+  remove: 'remove("reports/2026-08.csv")',
+  list: 'list("reports/")',
+};
+
+function checkRelativeName(name, call) {
   // A name that is not a string — `upload(file, {})` — reached `startsWith`
-  // and escaped as a TypeError, uncoded (BB-008).
-  if (name !== undefined && name !== null && typeof name !== "string") {
-    throw refused("bad_request",
-      `an object's name is a string, got ${Array.isArray(name) ? "an array" : typeof name}`,
-      { hint: 'pass the name as a string: upload("local.csv", "reports/2026-08.csv")' });
+  // and escaped as a TypeError, uncoded (BB-008). undefined and null are not
+  // strings either: they were invalid_name "a name is required" (BB-109). The
+  // calls whose name is optional (upload, put, list) default it first.
+  if (typeof name !== "string") {
+    const got = name === null ? "null" : Array.isArray(name) ? "an array" : typeof name;
+    throw refused("bad_request", `${call}()'s object name is a string, got ${got}`,
+      { hint: `pass the name as a string: ${NAME_EXAMPLE[call]}` });
   }
   if (!name) throw refused("invalid_name", "a name is required");
   if (name.startsWith("/") || name.endsWith("/")) {

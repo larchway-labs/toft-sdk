@@ -160,14 +160,34 @@ type Viewer struct {
 
 // String never renders the blob: it is a bearer credential for one session, and
 // a log line is exactly where one should not end up.
+//
+// What it names is what the app already knows. With viewer identity on and this
+// blob resolved ([Who] or [Viewer.Identity] on it, within the cache's minute),
+// that is the person; otherwise it claims nothing about whether the app can see
+// who — it printed "the app cannot see who" beside a Who that named them
+// (BB-107). It never asks the platform itself.
 func (v *Viewer) String() string {
-	switch v.role {
-	case RoleAnonymous:
+	if v.role == RoleAnonymous {
 		return "<toft.Viewer (an anonymous visitor; nobody is signed in)>"
-	case RoleUnknown, "":
-		return "<toft.Viewer (the app cannot see who)>"
 	}
-	return "<toft.Viewer (a signed-in person; the app cannot see who)>"
+	identityMu.Lock()
+	hit, ok := identityCache[v.blob]
+	identityMu.Unlock()
+	if ok && hit.who != nil && hit.until.After(time.Now()) {
+		name := hit.who.Name
+		if name == "" {
+			name = hit.who.ID
+		}
+		if hit.who.Role != "" {
+			name += ", " + hit.who.Role
+		}
+		return "<toft.Viewer (" + name + ")>"
+	}
+	who := "a signed-in person"
+	if v.role == RoleUnknown || v.role == "" {
+		who = "this request's viewer"
+	}
+	return "<toft.Viewer (" + who + "; Identity() says who, where viewer identity is on)>"
 }
 
 // Identity resolves who this viewer is, or nil if there is nobody to name.

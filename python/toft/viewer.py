@@ -148,15 +148,25 @@ class Viewer:
         """
         return _resolve(self._blob, refresh=refresh)
 
-    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+    def __repr__(self) -> str:
         # Never the blob itself: it is a bearer credential for one session, and
         # a log line is exactly where one should not end up.
+        #
+        # What it names is what the app already knows. With viewer identity on
+        # and this blob resolved (who() or identity() on it, within the cache's
+        # minute), that is the person; otherwise it claims nothing about whether
+        # the app can see who — it printed "the app cannot see who" beside a
+        # who() that named them (BB-107). It never asks the platform itself.
         if self._role == "anonymous":
             return "<toft.Viewer (an anonymous visitor; nobody is signed in)>"
-        if self._role == "unknown":
-            return "<toft.Viewer (the app cannot see who)>"
-        return "<toft.Viewer (a signed-in person; the app cannot see who)>"
-
+        with _identity_lock:
+            hit = _identity_cache.get(self._blob)
+        if hit is not None and hit[1] is not None and hit[0] > time.monotonic():
+            person = hit[1]
+            role = f", {person.role}" if person.role else ""
+            return f"<toft.Viewer ({person.name or person.id}{role})>"
+        who = "this request's viewer" if self._role == "unknown" else "a signed-in person"
+        return f"<toft.Viewer ({who}; identity() says who, where viewer identity is on)>"
 
 def viewer(headers: Mapping[str, Any] | Any) -> Viewer:
     """Build a :class:`Viewer` from the request headers the app is serving.

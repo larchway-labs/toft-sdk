@@ -55,9 +55,18 @@ export async function fetchStore(url, init = {}) {
  */
 export function refuseRedirect(resp, path) {
   if (resp.status >= 300 && resp.status < 400) {
-    throw new ToftError(`unexpected redirect from ${path}`, { status: resp.status });
+    // Coded and hinted as R has it (BB-113): it was code "" and hint null.
+    throw refusal("unexpected_redirect", `unexpected redirect from ${path}`, {
+      status: resp.status,
+      hint: REDIRECT_HINT,
+    });
   }
 }
+
+/** The next step for a redirect the SDK will not follow — R's words. */
+export const REDIRECT_HINT =
+  "TOFT_API_URL should be the address Toft set for this app; a redirect usually " +
+  "means it points at a page behind sign-in or at the wrong host";
 
 /** The app contract version this SDK speaks, sent on every call. */
 export const APP_CONTRACT_VERSION = "1";
@@ -459,7 +468,10 @@ export class AppTransport {
     if (resp.status >= 300 && resp.status < 400) {
       const location = resp.headers.get("Location");
       if (!location) {
-        throw new ToftError("the platform redirected without a location");
+        throw refusal("unexpected_response", "the platform redirected without a location", {
+          status: resp.status,
+          hint: REDIRECT_HINT,
+        });
       }
       let object;
       try {

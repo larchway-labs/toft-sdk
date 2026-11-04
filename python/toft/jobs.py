@@ -529,7 +529,19 @@ class JobRun:
         return list(raw.get("lines") or []) if raw else []
 
     def tail(self, poll_interval: float = 2.0) -> Iterator[dict]:
-        """Yield log lines until the run reaches a terminal status."""
+        """Yield log lines until the run reaches a terminal status.
+
+        A poll interval that is not positive is ``bad_request`` at the call, as
+        ``wait()`` has it, before any request: 0 was a loop the app's own rate
+        limiter ended (BB-108).
+        """
+        if (isinstance(poll_interval, bool) or not isinstance(poll_interval, (int, float))
+                or not math.isfinite(poll_interval) or poll_interval <= 0):
+            raise ToftError(f"poll_interval is seconds between reads, more than 0 — got {poll_interval!r}", body={
+                "code": "bad_request", "retryable": False, "hint": "for line in run.tail(poll_interval=2): ..."})
+        return self._tail(poll_interval)
+
+    def _tail(self, poll_interval: float) -> Iterator[dict]:
         seq = 0
         while True:
             try:

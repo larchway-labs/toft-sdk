@@ -101,10 +101,30 @@ export class Viewer {
     return resolveIdentity(this._blob, refresh);
   }
 
+  // What it names is what the app already knows. With viewer identity on and
+  // this blob resolved (who() or identity() on it, within the cache's minute),
+  // that is the person; otherwise it claims nothing about whether the app can
+  // see who — it printed "the app cannot see who" beside a who() that named
+  // them (BB-107). toString is synchronous, so it never asks the platform.
   toString() {
     if (this._role === ROLE_ANONYMOUS) return "[Viewer: an anonymous visitor; nobody is signed in]";
-    if (this._role === ROLE_UNKNOWN) return "[Viewer: the app cannot see who]";
-    return "[Viewer: a signed-in person; the app cannot see who]";
+    const hit = identityCache.get(this._blob);
+    if (hit && hit.identity && hit.expires > Date.now()) {
+      const { name, id, role } = hit.identity;
+      return `[Viewer: ${name || id}${role ? ` (${role})` : ""}]`;
+    }
+    const who = this._role === ROLE_UNKNOWN ? "this request's viewer" : "a signed-in person";
+    return `[Viewer: ${who}; identity() says who, where viewer identity is on]`;
+  }
+
+  // An inspect or a JSON.stringify of a Viewer is its toString: the job surface
+  // and the request deadline inside it are the SDK's, and the blob never goes.
+  toJSON() {
+    return String(this);
+  }
+
+  [Symbol.for("nodejs.util.inspect.custom")]() {
+    return String(this);
   }
 }
 

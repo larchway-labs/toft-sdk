@@ -136,6 +136,11 @@ func appOrJobToken() (string, error) {
 
 func trimSlash(base string) string { return strings.TrimRight(base, "/") }
 
+// redirectHint is the next step for a redirect the SDK will not follow — R's
+// words, in all four.
+const redirectHint = "TOFT_API_URL should be the address Toft set for this app; a redirect " +
+	"usually means it points at a page behind sign-in or at the wrong host"
+
 // noRedirectClient never follows a redirect on its own: see follow for why the
 // one route that redirects is followed by hand instead.
 func noRedirectClient() *http.Client {
@@ -233,7 +238,8 @@ func (t *transport) follow(ctx context.Context, path string, headers map[string]
 
 	location := resp.Header.Get("Location")
 	if location == "" {
-		return nil, &Error{Message: "the platform redirected without a location", Status: resp.StatusCode}
+		return nil, &Error{Body: refusal("unexpected_response", redirectHint),
+			Message: "the platform redirected without a location", Status: resp.StatusCode}
 	}
 	return nonNil(fetchPresigned(ctx, location))
 }
@@ -360,7 +366,9 @@ func (t *transport) once(ctx context.Context, method, path string, body []byte, 
 	// A redirect on an ordinary call is the platform answering a question this
 	// method did not ask; only follow deals with those.
 	if resp.StatusCode >= 300 {
+		// Coded and hinted as R has it (BB-113): it was uncoded.
 		return nil, true, &Error{
+			Body:    refusal("unexpected_redirect", redirectHint),
 			Message: fmt.Sprintf("unexpected redirect from %s", path),
 			Status:  resp.StatusCode,
 		}

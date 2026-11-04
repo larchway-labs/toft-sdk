@@ -269,8 +269,11 @@ const rateLimitPauseDefault = time.Second
 
 // UpdateN is [DataClient.Update] with the attempt count spelled out.
 func (d DataClient) UpdateN(ctx context.Context, mutate func(map[string]any) (map[string]any, error), attempts int) (Document, error) {
+	// Refused as Python and Node refuse it, before any request (BB-112): 0
+	// and -1 ran one attempt and wrote.
 	if attempts < 1 {
-		attempts = 1
+		return Document{}, badRequest(fmt.Sprintf("attempts is a whole number from 1, got %d", attempts),
+			"toft.Data.UpdateN(ctx, fn, 5), or toft.Data.Update(ctx, fn) for the default")
 	}
 	var last error
 	conflicts := 0

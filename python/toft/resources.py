@@ -110,7 +110,7 @@ class Mount:
         page; pass it back to read the next one.
         """
         if path:
-            _check_relative_path(path)
+            _check_relative_path(path, "list")
         query = {"path": path, "cursor": cursor}
         page = transport().get(self._route("/api/v1/app/store/{slug}/objects", query=query)) or {}
         return Listing(
@@ -128,9 +128,9 @@ class Mount:
         straight to the object store — the platform signs, and never sees them.
         """
         src = _check_source(source, "upload()")
-        _check_name_type(name)
+        _check_name_type(name, "upload", optional=True)
         target = name or src.name
-        _check_relative_name(target)
+        _check_relative_name(target, "upload")
         try:
             data = src.read_bytes()
         except OSError as exc:
@@ -158,7 +158,7 @@ class Mount:
     def download(self, name: str, dest: "str | Path | None" = None) -> "bytes | Path":
         """Fetch one object: its bytes, or written to ``dest`` and that path returned."""
         try:
-            data = _send(self._sign_get(name), None)
+            data = _send(self._sign_get(name, call="download"), None)
         except ToftError as exc:
             if exc.status == 404:
                 # The URL is signed for any name; the store is what answers
@@ -182,16 +182,16 @@ class Mount:
         then — which is the point for a download link, and the reason not to log
         it. ``attachment`` makes a browser save it under the object's own name.
         """
-        return str(self._sign_get(name, attachment)["url"])
+        return str(self._sign_get(name, attachment, call="url")["url"])
 
     def remove(self, name: str) -> None:
         """Delete one object. Needs ``full``."""
-        _check_relative_name(name)
+        _check_relative_name(name, "remove")
         signed = transport().delete(self._route("/api/v1/app/store/{slug}/objects/{name}", name))
         _send(signed, None)
 
-    def _sign_get(self, name: str, attachment: bool = False) -> dict:
-        _check_relative_name(name)
+    def _sign_get(self, name: str, attachment: bool = False, call: str = "download") -> dict:
+        _check_relative_name(name, call)
         query = {"disposition": "attachment"} if attachment else {}
         return transport().get(self._route("/api/v1/app/store/{slug}/objects/{name}", name, query)) or {}
 
@@ -230,9 +230,9 @@ class Mount:
         the first wrong call rather than corrupting data slowly.
         """
         src = _check_source(source, "put()")
-        _check_name_type(name)
+        _check_name_type(name, "put", optional=True)
         target_name = name or src.name
-        _check_relative_name(target_name)
+        _check_relative_name(target_name, "put")
 
         if not self.mounted:
             raise _refused("not_mounted",
@@ -330,12 +330,27 @@ def _refused(code: str, message: str, status: int | None = None,
 _NAME_HINT = "use a relative name with forward slashes and no '.' or '..' segments"
 
 
-def _check_name_type(name: Any) -> None:
+#: The example each call's not-a-string refusal names, so the hint is the call
+#: that was made — download(5) was told to call upload() (BB-109).
+_NAME_EXAMPLE = {
+    "upload": 'upload("local.csv", "reports/2026-08.csv")',
+    "put": 'put("local.csv", "reports/2026-08.csv")',
+    "download": 'download("reports/2026-08.csv")',
+    "url": 'url("reports/2026-08.csv")',
+    "remove": 'remove("reports/2026-08.csv")',
+    "list": 'list("reports/")',
+}
+
+
+def _check_name_type(name: Any, call: str, optional: bool = False) -> None:
     """A name that is not a string — ``upload(f, 5)`` — reached ``startswith``
-    and escaped as an uncoded AttributeError (BB-008's sweep)."""
-    if name is not None and not isinstance(name, str):
-        raise _refused("bad_request", f"an object's name is a string, got {type(name).__name__}",
-                       hint='pass the name as a string: upload("local.csv", "reports/2026-08.csv")')
+    and escaped as an uncoded AttributeError (BB-008's sweep). ``None`` is one
+    too, except where the name is optional (``upload``, ``put``): it was
+    ``invalid_name`` "a name is required" (BB-109)."""
+    if (name is None and optional) or isinstance(name, str):
+        return
+    raise _refused("bad_request", f"{call}()'s object name is a string, got {type(name).__name__}",
+                   hint=f"pass the name as a string: {_NAME_EXAMPLE[call]}")
 
 
 def _check_source(source: Any, call: str) -> Path:
@@ -348,13 +363,13 @@ def _check_source(source: Any, call: str) -> Path:
                    hint=f'pass the path of a file on this machine first: {call[:-2]}("report.csv")')
 
 
-def _check_relative_path(path: str) -> None:
+def _check_relative_path(path: str, call: str) -> None:
     """A listing path: a relative name, with one trailing slash allowed."""
-    _check_name_type(path)
-    _check_relative_name(path[:-1] if path.endswith("/") else path)
+    _check_name_type(path, call)
+    _check_relative_name(path[:-1] if path.endswith("/") else path, call)
 
 
-def _check_relative_name(name: str) -> None:
+def _check_relative_name(name: str, call: str) -> None:
     """Refuse a name that would land outside the mount.
 
     The same discipline the platform applies to an uploaded object's name, for
@@ -362,7 +377,7 @@ def _check_relative_name(name: str) -> None:
     traversal segment here would write into the app's own filesystem — over its
     code, in the worst case — rather than into the storage it was given.
     """
-    _check_name_type(name)
+    _check_name_type(name, call)
     if not name:
         raise _refused("invalid_name", "a name is required")
     if name.startswith("/") or name.endswith("/"):

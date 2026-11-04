@@ -38,7 +38,9 @@ mounts <- function() {
                         hint = STORAGE_ENV_HINT))
     }
   )
-  if (!is.list(parsed) || (length(parsed) > 0 && !is.null(names(parsed)))) {
+  # An object has names even when it is empty: jsonlite reads {} as a named
+  # list(), which the length test let through as no mounts (BB-110).
+  if (!is.list(parsed) || !is.null(names(parsed))) {
     stop(toft_refusal("storage_env_invalid",
                       sprintf("%s should be a JSON array of mounts", ENV_STORAGE),
                       hint = STORAGE_ENV_HINT))
@@ -321,7 +323,7 @@ store_put <- function(mount, source, name = NULL) {
   if (missing(source)) source <- ""
   check_local_file(source, "store_put()", "store_put(s, \"report.csv\")")
   target <- if (is.null(name)) basename(source) else name
-  check_relative_name(target)
+  check_relative_name(target, "store_put")
 
   if (identical(mount$access, "read")) {
     stop(toft_refusal("insufficient_access", sprintf(
@@ -358,7 +360,8 @@ store_put <- function(mount, source, name = NULL) {
 #' @export
 store_list <- function(mount, path = "", cursor = "") {
   mount <- as_store(mount, "store_list()")
-  if (nzchar(path)) check_relative_name(sub("/$", "", path))
+  if (!is.character(path) || length(path) != 1 || is.na(path)) check_relative_name(path, "store_list")
+  if (nzchar(path)) check_relative_name(sub("/$", "", path), "store_list")
   page <- store_request("GET", store_route(mount, "/api/v1/app/store/{slug}/objects"),
                         query = store_query(mount, list(path = path, cursor = cursor)))
   list(
@@ -385,8 +388,8 @@ store_upload <- function(mount, source, name = NULL) {
   mount <- as_store(mount, "store_upload()")
   if (missing(source)) source <- ""
   check_local_file(source, "store_upload()", "store_upload(s, \"report.csv\")")
-  target <- if (is.null(name) || !nzchar(name)) basename(source) else name
-  check_relative_name(target)
+  target <- if (is.null(name) || identical(name, "")) basename(source) else name
+  check_relative_name(target, "store_upload")
   data <- readBin(source, "raw", n = file.info(source)$size)
   signed <- store_request("POST", store_route(mount, "/api/v1/app/store/{slug}/objects"),
                          body = list(name = target, size = length(data),
@@ -420,7 +423,7 @@ store_upload <- function(mount, source, name = NULL) {
 #' @export
 store_download <- function(mount, name, dest = NULL) {
   mount <- as_store(mount, "store_download()")
-  signed <- sign_get(mount, name, FALSE)
+  signed <- sign_get(mount, name, FALSE, "store_download")
   got <- send_signed(signed, NULL, keep = TRUE)
   if (got$status == 404) {
     # The URL is signed for any name; the store is what answers that nothing
@@ -453,7 +456,7 @@ store_download <- function(mount, name, dest = NULL) {
 #' @export
 store_url <- function(mount, name, attachment = FALSE) {
   mount <- as_store(mount, "store_url()")
-  sign_get(mount, name, attachment)$url
+  sign_get(mount, name, attachment, "store_url")$url
 }
 
 #' Delete one object from a store. Needs `full`.
@@ -464,15 +467,15 @@ store_url <- function(mount, name, attachment = FALSE) {
 #' @export
 store_remove <- function(mount, name) {
   mount <- as_store(mount, "store_remove()")
-  check_relative_name(name)
+  check_relative_name(name, "store_remove")
   signed <- store_request("DELETE", store_route(mount, "/api/v1/app/store/{slug}/objects/{name}", name),
                          query = store_query(mount))
   check_signed_status(send_signed(signed, NULL))
   invisible(NULL)
 }
 
-sign_get <- function(mount, name, attachment) {
-  check_relative_name(name)
+sign_get <- function(mount, name, attachment, call) {
+  check_relative_name(name, call)
   extra <- if (isTRUE(attachment)) list(disposition = "attachment") else list()
   store_request("GET", store_route(mount, "/api/v1/app/store/{slug}/objects/{name}", name),
                 query = store_query(mount, extra))
@@ -579,11 +582,23 @@ check_signed_status <- function(status) {
 # rather than into the storage it was given.
 NAME_HINT <- "use a relative name with forward slashes and no '.' or '..' segments"
 
-check_relative_name <- function(name) {
+# The example each call's not-a-string refusal names, so the hint is the call
+# that was made — store_download(s, 5) was told to call store_upload() (BB-109's sweep).
+NAME_EXAMPLE <- c(
+  store_upload = "store_upload(s, \"local.csv\", \"reports/2026-08.csv\")",
+  store_put = "store_put(s, \"local.csv\", \"reports/2026-08.csv\")",
+  store_download = "store_download(s, \"reports/2026-08.csv\")",
+  store_url = "store_url(s, \"reports/2026-08.csv\")",
+  store_remove = "store_remove(s, \"reports/2026-08.csv\")",
+  store_list = "store_list(s, \"reports/\")"
+)
+
+check_relative_name <- function(name, call) {
   # One string: a number reached startsWith() as an uncoded error (BB-008's sweep).
   if (!is.character(name) || length(name) != 1 || is.na(name)) {
-    stop(toft_refusal("bad_request", sprintf("an object's name is one string, got %s", deparse(name)),
-                      hint = "pass the name as a string: store_upload(s, \"local.csv\", \"reports/2026-08.csv\")"))
+    stop(toft_refusal("bad_request", sprintf("%s()'s object name is one string, got %s", call,
+                                             paste(deparse(name), collapse = "")),
+                      hint = paste0("pass the name as a string: ", NAME_EXAMPLE[[call]])))
   }
   if (!nzchar(name)) {
     stop(toft_refusal("invalid_name", "a name is required", hint = NAME_HINT))
