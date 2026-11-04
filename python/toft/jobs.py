@@ -73,7 +73,7 @@ from collections.abc import Mapping
 from typing import Any, Iterator
 from urllib.parse import quote
 
-from .errors import ToftError, bad_request
+from .errors import ToftError, bad_request, refused
 from .session import transport
 from .transport import encode_json
 
@@ -583,9 +583,12 @@ class Jobs:
         """
         _require_name(job, "start()")
         if params is not None and not isinstance(params, Mapping):
-            raise bad_request(
-                f"params are a mapping of name to value, got {type(params).__name__}",
-                hint='pass params={"name": value, ...} as [jobs.<name>.params] declares them')
+            # param_type, as the platform answers "x", [1] or 5 and the R SDK
+            # passes through: one mistake, one code (BB-091).
+            raise refused(
+                "param_type",
+                f'parameters must be a JSON object, like {{"region": "emea"}} — got {type(params).__name__}',
+                hint='pass params={"name": value, ...} as [jobs.<name>.params] declares them, or leave it out')
         body: dict[str, Any] = {}
         if params:
             body["params"] = dict(params)

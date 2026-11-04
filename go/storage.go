@@ -1,6 +1,7 @@
 package toft
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -86,12 +87,11 @@ func (m Mount) Put(source, name string) (string, error) {
 	if err := m.checkMapped(); err != nil {
 		return "", err
 	}
-	// A volume is refused as every other store method refuses it — Put is store
-	// sugar, and the Mount that Store returns beside not_a_store must not quietly
-	// copy into the volume it named (BB-055).
-	if err := m.checkIsStore(); err != nil {
-		return "", err
-	}
+	// Put is a copy onto the mount, so a mounted volume takes it as a mounted
+	// store does — as Python's put(), Node's put() and R's store_put() do. The
+	// signed-URL methods (Upload, List, URL, Download, Remove) stay a store's
+	// alone, since a volume has no data plane (reverses BB-055's refusal,
+	// 2026-11-04: the four SDKs agree on the permissive answer).
 	if err := checkRelativeName(target); err != nil {
 		return "", err
 	}
@@ -172,22 +172,36 @@ func Mounts() ([]Mount, error) {
 		// — rather than null.
 		return []Mount{}, nil
 	}
-	var entries []struct {
+	type storageEntry struct {
 		Name   string `json:"name"`
 		Kind   string `json:"kind"`
 		Path   string `json:"path"`
 		Access string `json:"access"`
 		Folder string `json:"folder"`
 	}
-	if err := json.Unmarshal([]byte(raw), &entries); err != nil {
-		return nil, &Error{Body: refusal("storage_env_invalid", storageEnvHint), Message: fmt.Sprintf("%s is not a JSON array of resources: %v", EnvStorage, err), Wrapped: err}
+	// Decoded in two steps so a refusal names what is wrong in the variable's
+	// own terms — "an entry is not an object" — rather than quoting
+	// encoding/json's Go types at somebody who wrote JSON (BB-096).
+	var items []json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &items); err != nil {
+		return nil, &Error{Body: refusal("storage_env_invalid", storageEnvHint), Message: fmt.Sprintf("%s is not a JSON array of resources", EnvStorage), Wrapped: err}
 	}
-	if entries == nil {
+	if items == nil {
 		// "null" decodes into a nil slice without complaint; it is not a list.
 		return nil, &Error{Body: refusal("storage_env_invalid", storageEnvHint), Message: fmt.Sprintf("%s is not a JSON array of resources: null", EnvStorage)}
 	}
-	out := make([]Mount, 0, len(entries))
-	for _, entry := range entries {
+	out := make([]Mount, 0, len(items))
+	for _, item := range items {
+		item = bytes.TrimSpace(item)
+		if len(item) == 0 || item[0] != '{' {
+			return nil, &Error{Body: refusal("storage_env_invalid", storageEnvHint),
+				Message: fmt.Sprintf("a %s entry is not an object: %s", EnvStorage, item)}
+		}
+		var entry storageEntry
+		if err := json.Unmarshal(item, &entry); err != nil {
+			return nil, &Error{Body: refusal("storage_env_invalid", storageEnvHint),
+				Message: fmt.Sprintf("a %s entry's name, kind, path, access and folder are strings: %s", EnvStorage, item), Wrapped: err}
+		}
 		// The platform writes every entry with a name, a kind and an access
 		// level (and a path, "" for a store reached over signed URLs). An entry
 		// missing one is a hand-written stand-in that would resolve to a mount

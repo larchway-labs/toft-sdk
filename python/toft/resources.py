@@ -67,9 +67,9 @@ class Mount:
 
     def __repr__(self) -> str:
         # Named for the attribute app code reads — ``path`` — rather than the
-        # field behind it; None where the resource is not mounted here.
-        path = self.mount_path or None
-        return (f"Mount(name={self.name!r}, kind={self.kind!r}, path={path!r}, "
+        # field behind it; "" where the resource is not mounted here, as
+        # to_dict() and the other three SDKs say it (BB-096).
+        return (f"Mount(name={self.name!r}, kind={self.kind!r}, path={self.mount_path!r}, "
                 f"access={self.access!r}, folder={self.folder!r}, "
                 f"read_only={self.read_only!r}, mounted={self.mounted!r})")
 

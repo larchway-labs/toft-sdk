@@ -419,7 +419,8 @@ export class JobRun {
     if (!Number.isInteger(afterSeq) || afterSeq < 0) {
       const got = afterSeq !== null && typeof afterSeq === "object" && !Array.isArray(afterSeq)
         ? `an options object (${Object.keys(afterSeq).join(", ") || "{}"})`
-        : JSON.stringify(afterSeq) ?? String(afterSeq);
+        : typeof afterSeq === "number" ? String(afterSeq) // NaN, not JSON's "null" (BB-096)
+          : JSON.stringify(afterSeq) ?? String(afterSeq);
       throw refusal("bad_request",
         `logs() takes the seq of the last line already read, a whole number from 0, got ${got}`,
         { hint: "await run.logs() for every line, or run.logs(lastLine.seq) for the lines after it" });
@@ -547,14 +548,19 @@ export class Jobs {
    * request" than the parameters give.
    */
   async start(job, { params, idempotencyKey, ...rest } = {}) {
-    if (Object.keys(rest).length) {
+    const extra = Object.keys(rest).filter((k) => rest[k] !== undefined);
+    if (extra.length) {
       // An option this version does not take — `payload` most likely — is
       // refused rather than dropped: a run started without the input its
-      // caller meant to give it fails somewhere much harder to read.
+      // caller meant to give it fails somewhere much harder to read. Both
+      // options it does take are named, and a snake_case spelling of one
+      // gets its camelCase in the hint, as takeOptions gives (BB-093).
+      const camel = extra.includes("idempotency_key") ? "idempotencyKey, not idempotency_key: " : "";
       throw new ToftError(
-        `jobs.start does not take ${Object.keys(rest).join(", ")}: params are a run's only ` +
-          `input, and anything bigger belongs in the app's storage, named by a param`,
-        { body: { code: "bad_request", retryable: false, hint: "jobs.start(job, { params: { … } })" } },
+        `jobs.start does not take ${extra.join(", ")} — it takes params and idempotencyKey; ` +
+          `params are a run's only input, and anything bigger belongs in the app's storage, named by a param`,
+        { body: { code: "bad_request", retryable: false,
+          hint: `${camel}jobs.start(job, { params: { … }, idempotencyKey })` } },
       );
     }
     requireName(job, "jobs.start()");

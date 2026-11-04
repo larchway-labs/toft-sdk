@@ -194,9 +194,14 @@ export function takeOptions(call, options, allowed, example) {
 export function noMoreArgs(call, args, takes, example) {
   const extra = Array.prototype.slice.call(args, takes).filter((a) => a !== undefined);
   if (!extra.length) return;
+  const isOptions = (a) => a !== null && typeof a === "object" && !Array.isArray(a);
   const named = extra.map((a) =>
-    a !== null && typeof a === "object" && !Array.isArray(a) ? Object.keys(a).join(", ") || "{}" : JSON.stringify(a) ?? typeof a);
-  throw refusal("bad_request", `${call} does not take ${named.join(", ")} — it takes no options`,
+    isOptions(a) ? Object.keys(a).join(", ") || "{}" : JSON.stringify(a) ?? typeof a);
+  // A positional value is not an option: `download("a.txt", "/tmp/x")` is told
+  // how many arguments the call takes (BB-096).
+  const takesWhat = extra.some(isOptions) ? "it takes no options"
+    : `it takes ${takes === 1 ? "one argument" : `${takes} arguments`}`;
+  throw refusal("bad_request", `${call} does not take ${named.join(", ")} — ${takesWhat}`,
     { hint: example });
 }
 

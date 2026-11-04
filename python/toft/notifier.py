@@ -46,7 +46,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Iterable
 from urllib.parse import quote
 
-from .errors import ToftError, bad_request
+from .errors import ToftError, bad_request, refused
 from .session import transport
 from .transport import Part, encode_json
 
@@ -124,13 +124,14 @@ class Notify:
     def send(
         self,
         kind: str,
-        text: str,
+        text: str = "",
         *,
         title: str | None = None,
         severity: str | None = None,
         dedup_key: str | None = None,
         action: str | None = None,
         idempotency_key: str | None = None,
+        **extra: Any,
     ) -> Send:
         """Send one message through the named integration.
 
@@ -161,6 +162,8 @@ class Notify:
                 "email takes recipients and a subject — use toft.notify.email(to=…, subject=…, text=…)",
                 hint="use toft.notify.email(to=…, subject=…, text=…)",
             )
+        _refuse_extras("send()", name, extra,
+                       'toft.notify.send(kind, text, title=…, severity=…, dedup_key=…, idempotency_key=…)')
         body: dict[str, Any] = {"text": _require_text(text, f"{name} text")}
         if title:
             body["title"] = title
@@ -183,6 +186,7 @@ class Notify:
         *,
         reason: str | None = None,
         idempotency_key: str | None = None,
+        **extra: Any,
     ) -> Send:
         """Close an incident this app raised.
 
@@ -194,6 +198,8 @@ class Notify:
         An app that may page and may not un-page leaves somebody awake with no
         way to be told it is over, which is why this is not an optional half.
         """
+        _refuse_extras("resolve()", str(kind), extra,
+                       "toft.notify.resolve(kind, dedup_key, reason=…, idempotency_key=…)")
         return self.send(
             kind,
             reason or "Resolved by the application.",
@@ -211,6 +217,7 @@ class Notify:
         title: str | None = None,
         comment: str | None = None,
         idempotency_key: str | None = None,
+        **extra: Any,
     ) -> Send:
         """Put one file through the named integration — the "post the report" call.
 
@@ -235,6 +242,8 @@ class Notify:
         destination or on the wire.
         """
         which = _require_text(kind, "integration")
+        _refuse_extras("deliver()", which, extra,
+                       f'toft.notify.deliver("{which}", file, name=…, title=…, comment=…, idempotency_key=…)')
         part = Part.coerce("file", file)
         if name:
             part = Part("file", name, part.content, part.content_type)
@@ -258,7 +267,7 @@ class Notify:
 
     # ------------------------------------------------------------------ Slack
 
-    def slack(self, text: str, *, idempotency_key: str | None = None) -> Send:
+    def slack(self, text: str, *, idempotency_key: str | None = None, **extra: Any) -> Send:
         """Post one message to this app's Slack channel.
 
         :meth:`send` with ``"slack"``, under its published name and kept working
@@ -278,6 +287,7 @@ class Notify:
         key would be quietly deduplicating an app that meant to post twice.
         Pass one for a message whose duplicate would matter.
         """
+        _refuse_extras("slack()", "slack", extra, "toft.notify.slack(text, idempotency_key=…)")
         text = _require_text(text, "slack text")
         raw = transport().post_json(SLACK_PATH, {"text": text}, idempotency_key)
         return Send.from_raw(raw)
@@ -290,6 +300,7 @@ class Notify:
         comment: str | None = None,
         filename: str | None = None,
         idempotency_key: str | None = None,
+        **extra: Any,
     ) -> Send:
         """Upload one file to this app's Slack channel.
 
@@ -310,6 +321,8 @@ class Notify:
         20 MiB report because a response was slow is not cheap, in the channel
         or on the wire.
         """
+        _refuse_extras("slack_file()", "slack", extra,
+                       "toft.notify.slack_file(file, title=…, comment=…, filename=…, idempotency_key=…)")
         part = Part.coerce("file", file)
         if filename:
             part = Part("file", filename, part.content, part.content_type)
@@ -338,6 +351,7 @@ class Notify:
         bcc: str | Sequence[str] | None = None,
         attachments: Iterable[Any] | None = None,
         idempotency_key: str | None = None,
+        **extra: Any,
     ) -> Send:
         """Send one email as this app.
 
@@ -367,6 +381,8 @@ class Notify:
         wants "at most one report per week however many times I run" should pass
         its own stable key, such as ``f"weekly-report-{iso_week}"``.
         """
+        _refuse_extras("email()", "email", extra,
+                       "toft.notify.email(to=…, subject=…, text=…, html=…, cc=…, bcc=…, attachments=…, idempotency_key=…)")
         recipients = _addresses(to, "to")
         if not recipients:
             raise ToftError("email needs at least one recipient in 'to'", body={"code": "no_recipient", "retryable": False, "hint": "name who it goes to: pass an address in to (or cc, bcc) — an email has no default recipient"})
@@ -414,6 +430,61 @@ class Notify:
                 "hint": "pass the id of a send that slack(), send() or email() returned"})
         raw = transport().get(f"{SENDS_PATH}/{quote(send_id, safe='')}")
         return Send.from_raw(raw)
+
+
+# Fields that would choose where a message goes, refused as the platform and
+# the Node and R SDKs refuse them: a dropped field is a caller who believes
+# they chose (BB-092).
+_DESTINATION_FIELDS = {
+    "channel": "the channel it posts to",
+    "folder": "the folder its files go to",
+    "path": "where its files go",
+    "url": "the address it posts to",
+    "routing_key": "the service it pages",
+    "space": "the space it posts to",
+    "site": "the site it writes to",
+    "webhook": "the receiver it posts to",
+    "to_channel": "the channel it posts to",
+}
+
+# Fields that would choose who a message is from. ``from`` is a keyword in
+# Python, so ``from_`` is how a caller writes it.
+_SENDER_FIELDS = {"from", "from_", "sender", "reply_to", "headers"}
+
+_KIND_LABELS = {"slack": "Slack", "teams": "Microsoft Teams", "email": "email",
+                "pagerduty": "PagerDuty", "sharepoint": "SharePoint", "webhook": "a webhook"}
+
+
+def _refuse_extras(call: str, kind: str, extra: Mapping[str, Any], example: str) -> None:
+    """Refuse every keyword this call does not take, coded and hinted.
+
+    A destination field is ``destination_not_allowed``, a sender field
+    ``sender_not_allowed`` — the platform's codes — and anything else
+    ``bad_request`` naming the call's own form, never Python's uncoded
+    ``TypeError``.
+    """
+    given = {k: v for k, v in extra.items() if v is not None}
+    for field_name in given:
+        if field_name in _DESTINATION_FIELDS:
+            label = _KIND_LABELS.get(kind, json.dumps(kind))
+            raise refused(
+                "destination_not_allowed",
+                f"a send to {label} does not take {field_name!r}: an app does not choose "
+                f"{_DESTINATION_FIELDS[field_name]} — its owners choose it on the app's "
+                "Integrations tab, from what the connection an administrator made can reach. "
+                f"Remove the {field_name!r} argument.",
+                hint=f"remove the {field_name!r} argument; the app's owners choose the "
+                     "destination on its Integrations tab")
+        if field_name in _SENDER_FIELDS:
+            raise refused(
+                "sender_not_allowed",
+                'an app does not choose its sender or reply-to — mail goes out as '
+                '"<App Name> (via Toft)" from this install\'s address, and replies go to the '
+                "address set on its Integrations tab, or to the app's owner when none is",
+                hint="remove from_, reply_to and headers from the call; the reply-to address "
+                     "is set on the app's Integrations tab")
+    if given:
+        raise bad_request(f"{call} does not take {', '.join(sorted(given))}", hint=example)
 
 
 def _require_text(value: str, what: str) -> str:
