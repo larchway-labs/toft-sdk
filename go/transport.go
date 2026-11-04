@@ -31,6 +31,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	mrand "math/rand/v2"
 	"mime"
 	"mime/multipart"
 	"net/http"
@@ -51,6 +52,10 @@ var defaultTimeout = 30 * time.Second
 const (
 	// How long to wait before the single retry when the platform did not say.
 	defaultRetryAfter = 2 * time.Second
+
+	// Added to each wait on a 429, so a burst of refused calls does not come
+	// back at one instant and meet a single free token together.
+	rateLimitJitter = 500 * time.Millisecond
 
 	// An upload can be much slower than a JSON call, and timing one out at 30s
 	// turns a working 20 MiB report into a mystery.
@@ -297,22 +302,40 @@ func (t *transport) attempt(ctx context.Context, method, path string, body []byt
 	if !ok || !resendable(method, headers, sent.headers, platform) {
 		return nil, err
 	}
-	wait := platform.RetryAfter
-	if !platform.retryGiven {
-		wait = defaultRetryAfter
+	// The rate limiter's 429 is the exception to "one resend": it answers
+	// before any handler runs, so it is waited out — Retry-After plus a jitter
+	// — for as long as the call's bound allows. A single resend paced calls
+	// made one at a time but refused a concurrent burst: every refused call
+	// came back at the same instant, one token was free, and the rest were
+	// returned (TOFT-BB-002).
+	limited := platform.Status == http.StatusTooManyRequests
+	for {
+		wait := platform.RetryAfter
+		if !platform.retryGiven {
+			wait = defaultRetryAfter
+		}
+		if limited {
+			wait += mrand.N(rateLimitJitter)
+		}
+		// A wait that outlasts the call's bound would only end in a timeout
+		// that hides the answer the platform did give.
+		if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) <= wait {
+			return nil, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, &Error{Message: ctx.Err().Error(), Wrapped: ctx.Err()}
+		case <-time.After(wait):
+		}
+		out, sent, err = t.once(ctx, method, path, body, contentType, headers, timeout)
+		if err == nil || !limited {
+			return out, err
+		}
+		if platform, ok = AsError(err); !ok || platform.Status != http.StatusTooManyRequests ||
+			!resendable(method, headers, sent.headers, platform) {
+			return nil, err
+		}
 	}
-	// A wait that outlasts the call's bound would only end in a timeout that
-	// hides the answer the platform did give.
-	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) <= wait {
-		return nil, err
-	}
-	select {
-	case <-ctx.Done():
-		return nil, &Error{Message: ctx.Err().Error(), Wrapped: ctx.Err()}
-	case <-time.After(wait):
-	}
-	out, _, err = t.once(ctx, method, path, body, contentType, headers, timeout)
-	return out, err
 }
 
 // resendable is whether the single built-in resend fires, given what the

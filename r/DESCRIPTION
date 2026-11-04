@@ -8,5 +8,5 @@ Description: The platform's own voice from inside a deployed R app: app data,
     so by name when it is missing.
 License: Apache License (== 2.0)
 Encoding: UTF-8
-Imports: jsonlite, curl, openssl
+Imports: jsonlite, curl, openssl, stats
 RoxygenNote: 7.3.2

@@ -21,6 +21,9 @@
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_RETRY_AFTER_MS = 2_000;
+// Added to each wait on a 429, so a burst of refused calls does not come back
+// at one instant and meet a single free token together.
+const RATE_LIMIT_JITTER_MS = 500;
 
 /**
  * How long one object-store transfer may take — a presigned GET or PUT. Five
@@ -494,17 +497,34 @@ export class AppTransport {
    * One call: an attempt, and at most one resend when `resendable` allows it,
    * all inside the one bound — "every call gives up after 30 s" is the promise,
    * and a fresh bound per attempt made a stalled platform cost a minute.
+   *
+   * The rate limiter's 429 is the exception to "one resend": it answers before
+   * any handler runs, so it is waited out — Retry-After plus a jitter — for as
+   * long as the bound allows. A single resend paced calls made one at a time
+   * but refused a concurrent burst: every refused call came back at the same
+   * instant, one token was free, and the rest were raised (TOFT-BB-002).
    */
   async #attempt(method, path, body, headers, form = false) {
     const deadline = Date.now() + this._timeoutMs;
+    let err;
     try {
       return await this.#once(method, path, body, headers, form, this._timeoutMs);
-    } catch (err) {
-      if (!(err instanceof ToftError) || !resendable(method, headers, err)) throw err;
-      const wait = err.retryAfter !== undefined ? err.retryAfter * 1000 : DEFAULT_RETRY_AFTER_MS;
+    } catch (e) {
+      err = e;
+    }
+    if (!(err instanceof ToftError) || !resendable(method, headers, err)) throw err;
+    for (;;) {
+      const limited = err.status === 429;
+      const wait = (err.retryAfter !== undefined ? err.retryAfter * 1000 : DEFAULT_RETRY_AFTER_MS)
+        + (limited ? Math.random() * RATE_LIMIT_JITTER_MS : 0);
       if (deadline - Date.now() <= wait) throw err;
       await sleep(wait);
-      return this.#once(method, path, body, headers, form, Math.max(deadline - Date.now(), 1));
+      try {
+        return await this.#once(method, path, body, headers, form, Math.max(deadline - Date.now(), 1));
+      } catch (e) {
+        if (!limited || !(e instanceof ToftError) || e.status !== 429 || !resendable(method, headers, e)) throw e;
+        err = e;
+      }
     }
   }
 

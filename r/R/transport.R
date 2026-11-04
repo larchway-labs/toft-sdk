@@ -35,6 +35,10 @@ api_url <- function() {
 # Seconds the built-in retry waits when a refusal names no Retry-After.
 DEFAULT_RETRY_AFTER <- 2
 
+# Seconds of jitter added to each wait on a 429, so a burst of refused calls
+# does not come back at one instant and meet a single free token together.
+RATE_LIMIT_JITTER <- 0.5
+
 # Seconds one platform round trip may take, and one object-store transfer — the
 # bounds the other three SDKs set. Without them a platform or a store that
 # accepted the connection and stalled held a Shiny or plumber worker forever.
@@ -143,21 +147,32 @@ toft_request <- function(method, path, body = NULL, query = NULL, extra_headers 
     resp <- first
     err <- if (resp$status_code >= 400) toft_error(method, path, resp, response_text(resp)) else NULL
   }
+  # The rate limiter's 429 is the exception to "one resend": it answers before
+  # any handler runs, so it is waited out -- Retry-After plus a jitter -- for as
+  # long as the bound allows. A single resend paced calls made one at a time but
+  # refused a concurrent burst: every refused call came back at the same
+  # instant, one token was free, and the rest were raised (TOFT-BB-002).
   if (!is.null(err)) {
     if (!resendable(err, idempotent)) {
       stop(err)
     }
-    wait <- if (is.null(err$retry_after)) DEFAULT_RETRY_AFTER else err$retry_after
-    remaining <- as.numeric(deadline - Sys.time(), units = "secs")
-    if (remaining <= wait) {
-      stop(err)
-    }
-    Sys.sleep(wait)
-    remaining <- max(as.numeric(deadline - Sys.time(), units = "secs"), 0.001)
-    curl::handle_setopt(handle, timeout_ms = max(1, round(remaining * 1000)))
-    resp <- fetch(url, handle, reach)
-    if (resp$status_code >= 400) {
-      stop(toft_error(method, path, resp, response_text(resp)))
+    limited <- identical(as.integer(err$status), 429L)
+    repeat {
+      wait <- if (is.null(err$retry_after)) DEFAULT_RETRY_AFTER else err$retry_after
+      if (limited) wait <- wait + stats::runif(1, 0, RATE_LIMIT_JITTER)
+      remaining <- as.numeric(deadline - Sys.time(), units = "secs")
+      if (remaining <= wait) {
+        stop(err)
+      }
+      Sys.sleep(wait)
+      remaining <- max(as.numeric(deadline - Sys.time(), units = "secs"), 0.001)
+      curl::handle_setopt(handle, timeout_ms = max(1, round(remaining * 1000)))
+      resp <- fetch(url, handle, reach)
+      if (resp$status_code < 400) break
+      err <- toft_error(method, path, resp, response_text(resp))
+      if (!limited || resp$status_code != 429 || !resendable(err, idempotent)) {
+        stop(err)
+      }
     }
   }
   text <- response_text(resp)

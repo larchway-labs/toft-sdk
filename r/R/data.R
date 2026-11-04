@@ -157,8 +157,9 @@ app_data_read <- function() {
 #' Reads the document and its version, applies `fn`, and writes the result only
 #' if nobody wrote in between — retrying the read on a conflict. Two requests
 #' updating the document at once both land, where `app_data_get()` then
-#' `app_data_set()` keeps whichever wrote last. The transport retries a
-#' `rate_limited` refusal once, as every R call does; past that it is raised.
+#' `app_data_set()` keeps whichever wrote last. The transport waits a
+#' `rate_limited` refusal out for the call's 30 s, as every R call does; past
+#' that it is raised.
 #'
 #' @param fn A function taking the current document (a list; an empty list when
 #'   never written) and returning the new one, a named list.

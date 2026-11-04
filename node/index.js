@@ -83,7 +83,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { lstatSync, mkdirSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
-import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { inspect } from "node:util";
 
 import { App, Mount, mounts, storage, store } from "./app.js";
@@ -414,7 +414,8 @@ export const SESSION_HEADER = "X-Toft-Session";
  * uploads being processed and intermediate results; durable data belongs on
  * a mapped storage resource (`TOFT_STORAGE`), not here. Outside
  * Toft a private directory under the system temp directory stands in —
- * `toft-scratch-<uid>/<app>`, mode 0700, never the shared temp directory
+ * `toft-scratch-<uid>/<hash>`, mode 0700, `<hash>` keyed on the working
+ * directory, never the shared temp directory
  * itself — so app code runs unchanged in local development.
  *
  * `parts` are relative and stay inside the root: an absolute part, or one that
@@ -449,7 +450,8 @@ function checkScratchParts(call, parts, example) {
 
 /**
  * Off the platform: a directory of this user's own under the system temp
- * directory, per app (the working directory's name), created 0700. The shared
+ * directory, per app (12 hex characters of the working directory's hash),
+ * created 0700. The shared
  * temp directory is world-writable, so a name another account can predict is
  * checked rather than trusted: a symlink, or a directory somebody else owns,
  * is refused instead of written into.
@@ -470,8 +472,10 @@ function localScratchRoot() {
       `${userRoot} is not a private directory of this user's — refusing to use it as scratch`,
       { hint: "remove it, or set TOFT_SCRATCH_DIR to a directory of your own" });
   }
-  const app = (process.env.TOFT_APP_SLUG || basename(process.cwd()) || "app").replace(/[^A-Za-z0-9._-]/g, "_");
-  return join(userRoot, app === "." || app === ".." ? "app" : app);
+  // Keyed by a hash of the working directory, as Python, Go and R key it: two
+  // apps in development whose folders share a name do not share scratch, and
+  // TOFT_APP_SLUG — an on-platform variable — does not move it (TOFT-BB-003).
+  return join(userRoot, createHash("sha256").update(process.cwd()).digest("hex").slice(0, 12));
 }
 
 /**

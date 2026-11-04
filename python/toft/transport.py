@@ -27,6 +27,7 @@ import http.client
 import json
 import mimetypes
 import os
+import random
 import socket
 import time
 import urllib.error
@@ -43,6 +44,9 @@ DEFAULT_TIMEOUT = 30.0
 
 # How long to wait before the single retry when the platform did not say.
 DEFAULT_RETRY_AFTER = 2.0
+# Added to each wait on a 429, so a burst of refused calls does not come back
+# at one instant and meet a single free token together.
+RATE_LIMIT_JITTER = 0.5
 
 # An upload can be much slower than a JSON call and timing one out at 30s turns
 # a working 20 MiB report into a mystery.
@@ -297,21 +301,37 @@ class AppTransport:
         headers: Mapping[str, str],
         timeout: float,
     ) -> Any:
-        # One bound for the whole call, both attempts and the wait between
+        # One bound for the whole call, every attempt and the waits between
         # them: "every call gives up after 30 s" is the promise.
+        #
+        # The rate limiter's 429 is the exception to "one resend": it answers
+        # before any handler runs, so it is waited out — Retry-After plus a
+        # jitter — for as long as the bound allows. A single resend paced calls
+        # made one at a time but refused a concurrent burst: every refused call
+        # came back at the same instant, one token was free, and the rest were
+        # raised (TOFT-BB-002).
         deadline = time.monotonic() + timeout
         try:
             return self._once(method, path, data, content_type, headers, timeout)
         except ToftError as exc:
             if not _resendable(method, headers, exc):
                 raise
-            wait = exc.retry_after if exc.retry_after is not None else DEFAULT_RETRY_AFTER
-            remaining = deadline - time.monotonic()
-            if remaining <= wait:
-                raise
+            err = exc
+        while True:
+            limited = err.status == 429
+            wait = err.retry_after if err.retry_after is not None else DEFAULT_RETRY_AFTER
+            if limited:
+                wait += random.random() * RATE_LIMIT_JITTER
+            if deadline - time.monotonic() <= wait:
+                raise err
             time.sleep(wait)
-            return self._once(method, path, data, content_type, headers,
-                              max(deadline - time.monotonic(), 0.001))
+            try:
+                return self._once(method, path, data, content_type, headers,
+                                  max(deadline - time.monotonic(), 0.001))
+            except ToftError as exc:
+                if not limited or exc.status != 429 or not _resendable(method, headers, exc):
+                    raise
+                err = exc
 
     def _once(
         self,
