@@ -202,7 +202,7 @@ class Mount:
             raise _refused("not_a_store",
                 f"{self.name!r} is a {self.kind}, which is reached at its path — only an "
                 f"object store is reached over signed URLs",
-                hint=f"use toft.storage({self.name!r}).path with the ordinary file APIs")
+                hint=f"use {_storage_call(self)}.path with the ordinary file APIs")
         # The folder always travels, "" included: it names *this* mapping, so a
         # resource mapped twice is never a question the platform has to ask back.
         params = {"folder": self.folder}
@@ -580,8 +580,23 @@ def store(name: str, folder: str | None = None) -> Mount:
     """
     mount = _resolve(name, folder, "store")
     if mount.kind and mount.kind != "store":
+        call = _storage_call(mount, folder is not None)
         raise _refused("not_a_store",
             f"{name!r} is a {mount.kind}, not a store. A volume is a real filesystem — "
-            f"write to toft.storage({name!r}).path directly, with the ordinary file APIs.",
-            hint=f"use toft.storage({name!r}).path with the ordinary file APIs")
+            f"write to {call}.path directly, with the ordinary file APIs.",
+            hint=f"use {call}.path with the ordinary file APIs")
     return mount
+
+
+def _storage_call(mount: Mount, folder_given: bool = False) -> str:
+    """The ``toft.storage(…)`` call that resolves this very mount — with its
+    folder when one was named or the name is mapped more than once, since the
+    bare name then raises ambiguous_mount (BB-008)."""
+    if not folder_given and not mount.folder:
+        try:
+            folder_given = sum(1 for m in mounts() if m.name == mount.name) > 1
+        except ToftError:
+            pass
+    if folder_given or mount.folder:
+        return f"toft.storage({mount.name!r}, folder={mount.folder!r})"
+    return f"toft.storage({mount.name!r})"

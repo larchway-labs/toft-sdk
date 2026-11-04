@@ -123,7 +123,7 @@ class Notify:
 
     def send(
         self,
-        kind: str,
+        kind: str | None = None,
         text: str = "",
         *,
         title: str | None = None,
@@ -156,6 +156,7 @@ class Notify:
         key would be quietly deduplicating an app that meant to post twice.
         Pass one for a message whose duplicate would matter.
         """
+        _require_given(kind, "send()", "the integration", 'toft.notify.send("slack", "Ingest finished")')
         name = _require_text(kind, "integration")
         if name == "email":
             raise bad_request(
@@ -181,8 +182,8 @@ class Notify:
 
     def resolve(
         self,
-        kind: str,
-        dedup_key: str,
+        kind: str | None = None,
+        dedup_key: str | None = None,
         *,
         reason: str | None = None,
         idempotency_key: str | None = None,
@@ -200,6 +201,9 @@ class Notify:
         """
         _refuse_extras("resolve()", str(kind), extra,
                        "toft.notify.resolve(kind, dedup_key, reason=…, idempotency_key=…)")
+        example = 'toft.notify.resolve("pagerduty", "ingest-late")'
+        _require_given(kind, "resolve()", "the integration", example)
+        _require_given(dedup_key, "resolve()", "the dedup key the trigger used", example)
         return self.send(
             kind,
             reason or "Resolved by the application.",
@@ -210,8 +214,8 @@ class Notify:
 
     def deliver(
         self,
-        kind: str,
-        file: Any,
+        kind: str | None = None,
+        file: Any = None,
         *,
         name: str | None = None,
         title: str | None = None,
@@ -241,9 +245,12 @@ class Notify:
         20 MiB report because a response was slow is not cheap, in the
         destination or on the wire.
         """
+        example = 'toft.notify.deliver("sharepoint", "/tmp/report.xlsx")'
+        _require_given(kind, "deliver()", "the integration", example)
         which = _require_text(kind, "integration")
         _refuse_extras("deliver()", which, extra,
                        f'toft.notify.deliver("{which}", file, name=…, title=…, comment=…, idempotency_key=…)')
+        _require_given(file, "deliver()", "a file", example)
         part = Part.coerce("file", file)
         if name:
             part = Part("file", name, part.content, part.content_type)
@@ -267,7 +274,7 @@ class Notify:
 
     # ------------------------------------------------------------------ Slack
 
-    def slack(self, text: str, *, idempotency_key: str | None = None, **extra: Any) -> Send:
+    def slack(self, text: str | None = None, *, idempotency_key: str | None = None, **extra: Any) -> Send:
         """Post one message to this app's Slack channel.
 
         :meth:`send` with ``"slack"``, under its published name and kept working
@@ -288,13 +295,14 @@ class Notify:
         Pass one for a message whose duplicate would matter.
         """
         _refuse_extras("slack()", "slack", extra, "toft.notify.slack(text, idempotency_key=…)")
+        _require_given(text, "slack()", "text", 'toft.notify.slack("Ingest finished")')
         text = _require_text(text, "slack text")
         raw = transport().post_json(SLACK_PATH, {"text": text}, idempotency_key)
         return Send.from_raw(raw)
 
     def slack_file(
         self,
-        file: Any,
+        file: Any = None,
         *,
         title: str | None = None,
         comment: str | None = None,
@@ -323,6 +331,7 @@ class Notify:
         """
         _refuse_extras("slack_file()", "slack", extra,
                        "toft.notify.slack_file(file, title=…, comment=…, filename=…, idempotency_key=…)")
+        _require_given(file, "slack_file()", "a file", 'toft.notify.slack_file("/tmp/report.xlsx")')
         part = Part.coerce("file", file)
         if filename:
             part = Part("file", filename, part.content, part.content_type)
@@ -343,9 +352,9 @@ class Notify:
     def email(
         self,
         *,
-        to: str | Sequence[str],
-        subject: str,
-        text: str,
+        to: str | Sequence[str] | None = None,
+        subject: str | None = None,
+        text: str | None = None,
         html: str | None = None,
         cc: str | Sequence[str] | None = None,
         bcc: str | Sequence[str] | None = None,
@@ -383,6 +392,12 @@ class Notify:
         """
         _refuse_extras("email()", "email", extra,
                        "toft.notify.email(to=…, subject=…, text=…, html=…, cc=…, bcc=…, attachments=…, idempotency_key=…)")
+        # Defaulted to None and checked here, so a call missing one is a coded
+        # bad_request naming it rather than Python's uncoded TypeError (BB-005).
+        example = 'toft.notify.email(to="someone@example.com", subject="…", text="…")'
+        _require_given(to, "email()", "to", example)
+        _require_given(subject, "email()", "subject", example)
+        _require_given(text, "email()", "text", example + " — text is required even with html=")
         recipients = _addresses(to, "to")
         if not recipients:
             raise ToftError("email needs at least one recipient in 'to'", body={"code": "no_recipient", "retryable": False, "hint": "name who it goes to: pass an address in to (or cc, bcc) — an email has no default recipient"})
@@ -415,7 +430,7 @@ class Notify:
 
     # ----------------------------------------------------------------- Status
 
-    def status(self, send: str | Send, **extra: Any) -> Send:
+    def status(self, send: str | Send | None = None, **extra: Any) -> Send:
         """Read back one send this app made.
 
         The only thing an app may read about its own sends, and deliberately so:
@@ -492,6 +507,12 @@ def _refuse_extras(call: str, kind: str, extra: Mapping[str, Any], example: str)
                      "is set on the app's Integrations tab")
     if given:
         raise bad_request(f"{call} does not take {', '.join(sorted(given))}", hint=example)
+
+
+def _require_given(value: Any, call: str, arg: str, example: str) -> None:
+    """A required argument left out — ``bad_request`` naming it, never ``TypeError``."""
+    if value is None:
+        raise bad_request(f"{call} needs {arg}", hint=f"pass {arg}: {example}")
 
 
 def _require_text(value: str, what: str) -> str:

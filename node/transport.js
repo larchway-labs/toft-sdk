@@ -538,12 +538,12 @@ export class AppTransport {
         // Our own refusal, raised while composing the request — the lazy
         // `token` getter is the one that does this — is rethrown untouched.
         if (err instanceof ToftError) throw err;
-        throw this.#unreachable(err, timeoutMs, !neverConnected(err));
+        throw this.#unreachable(err, !neverConnected(err));
       }
       try {
         text = await resp.text();
       } catch (err) {
-        throw this.#unreachable(err, timeoutMs, true);
+        throw this.#unreachable(err, true);
       }
     } finally {
       clearTimeout(timer);
@@ -558,11 +558,15 @@ export class AppTransport {
     }
   }
 
-  /** A request that got no answer: uncoded and retryable, and how far it got. */
-  #unreachable(err, timeoutMs, sent) {
+  /**
+   * A request that got no answer: uncoded and retryable, and how far it got.
+   * A timeout names the call's whole bound, not the share of it the resend had
+   * left (BB-015): "within 7273ms" read as a bound nobody set.
+   */
+  #unreachable(err, sent) {
     const timedOut = err?.name === "AbortError" || err?.name === "TimeoutError";
     const out = new ToftError(timedOut
-      ? `Toft did not answer within ${timeoutMs}ms`
+      ? `Toft did not answer within ${seconds(this._timeoutMs)}`
       : `cannot reach Toft at ${this.baseUrl}: ${err?.message ?? err}`);
     out.sent = timedOut || sent;
     out.timedOut = timedOut;
@@ -596,7 +600,7 @@ export class AppTransport {
       // refusal no retry can help look like a network failure worth retrying.
       if (err instanceof ToftError) throw err;
       if (err.name === "AbortError") {
-        throw new ToftError(`Toft did not answer within ${this._timeoutMs}ms`);
+        throw new ToftError(`Toft did not answer within ${seconds(this._timeoutMs)}`);
       }
       throw new ToftError(`cannot reach Toft at ${this.baseUrl}: ${err.message}`);
     } finally {
@@ -635,9 +639,17 @@ const NEVER_CONNECTED = new Set([
   "UND_ERR_CONNECT_TIMEOUT",
 ]);
 
+// A bound in the unit the other SDKs name it in: 30000 is "30s", 1500 "1.5s".
+function seconds(ms) {
+  return `${Number((ms / 1000).toFixed(3))}s`;
+}
+
 function neverConnected(err) {
   for (let e = err; e; e = e.cause) {
     if (NEVER_CONNECTED.has(e.code)) return true;
+    // fetch refuses a port on its blocked list (1, 25, 6000, …) before it
+    // opens anything, with an uncoded "bad port" (BB-004): nothing was sent.
+    if (e !== err && e.message === "bad port") return true;
     if (Array.isArray(e.errors) && e.errors.some((x) => NEVER_CONNECTED.has(x?.code))) return true;
   }
   return false;

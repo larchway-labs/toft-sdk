@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -89,7 +91,7 @@ func AccessToken(ctx context.Context, kind string) (Token, error) {
 	}
 	raw, err := t.postJSON(ctx, "/api/v1/app/tokens/"+url.PathEscape(kind), nil, "", nil)
 	if err != nil {
-		return Token{}, err
+		return Token{}, kindHint(err)
 	}
 	var wire struct {
 		AccessToken string      `json:"access_token"`
@@ -114,4 +116,38 @@ func resetTokenCache() {
 	tokenCache.Lock()
 	tokenCache.m = map[string]Token{}
 	tokenCache.Unlock()
+}
+
+// tokenCapability is one "<kind>.token" a platform hint names.
+var tokenCapability = regexp.MustCompile(`\b([a-z][a-z0-9_]*)\.token\b`)
+
+// kindHint rewrites the platform's unknown_capability hint for this call
+// (BB-008). The platform's hint is the one App.Can is given, naming
+// capabilities — "sharepoint.token, onedrive.token" — and AccessToken takes
+// the kind: following it asked for "sharepoint.token.token".
+func kindHint(err error) error {
+	e, ok := AsError(err)
+	if !ok || e.Code() != "unknown_capability" {
+		return err
+	}
+	// An install with the token route's own hint already names kinds.
+	if strings.Contains(e.Hint(), "kind alone") {
+		return err
+	}
+	var kinds []string
+	for _, m := range tokenCapability.FindAllStringSubmatch(e.Hint(), -1) {
+		kinds = append(kinds, strconv.Quote(m[1]))
+	}
+	hint := `pass the integration kind alone, like toft.AccessToken(ctx, "sharepoint") — not "sharepoint.token"`
+	if len(kinds) > 0 {
+		hint += "; the kinds that issue tokens are " + strings.Join(kinds, ", ")
+	}
+	body := make(map[string]any, len(e.Body)+1)
+	for k, v := range e.Body {
+		body[k] = v
+	}
+	body["hint"] = hint
+	out := *e
+	out.Body = body
+	return &out
 }

@@ -288,7 +288,13 @@ func (t *transport) attempt(ctx context.Context, method, path string, body []byt
 		return out, nil
 	}
 	platform, ok := AsError(err)
-	if !ok || !resendable(method, headers, sent, platform) {
+	// net/http resends a replayable request (a GET, or one carrying an
+	// Idempotency-Key) by itself when a reused connection dies under it. That
+	// is the one resend already spent: adding ours made three requests (BB-004).
+	if sent.carried > 1 {
+		return nil, err
+	}
+	if !ok || !resendable(method, headers, sent.headers, platform) {
 		return nil, err
 	}
 	wait := platform.RetryAfter
@@ -342,32 +348,44 @@ func idempotent(method string, headers map[string]string) bool {
 	return method == http.MethodGet || headers["Idempotency-Key"] != ""
 }
 
-// once makes one attempt, and reports whether the request's headers went out —
-// after which a handler may have acted on it.
-func (t *transport) once(ctx context.Context, method, path string, body []byte, contentType string, headers map[string]string, timeout time.Duration) ([]byte, bool, error) {
+// delivery is what one call to once put on the wire: whether the request's
+// headers went out — after which a handler may have acted on it — and on how
+// many connections, since net/http may itself have tried a second.
+type delivery struct {
+	headers bool
+	carried int32
+}
+
+// once makes one attempt, and reports what it delivered.
+func (t *transport) once(ctx context.Context, method, path string, body []byte, contentType string, headers map[string]string, timeout time.Duration) ([]byte, delivery, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	var sent atomic.Bool
-	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{WroteHeaders: func() { sent.Store(true) }})
+	var carried atomic.Int32
+	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+		GotConn:      func(httptrace.GotConnInfo) { carried.Add(1) },
+		WroteHeaders: func() { sent.Store(true) },
+	})
+	delivered := func(headers bool) delivery { return delivery{headers: headers, carried: carried.Load()} }
 
 	req, err := t.request(ctx, method, path, body, contentType, headers)
 	if err != nil {
-		return nil, false, err
+		return nil, delivery{}, err
 	}
 	resp, err := t.client.Do(req)
 	if err != nil {
-		return nil, sent.Load(), t.unreachable(err, timeout)
+		return nil, delivered(sent.Load()), t.unreachable(err, timeout)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		return nil, true, fromResponse(resp)
+		return nil, delivered(true), fromResponse(resp)
 	}
 	// A redirect on an ordinary call is the platform answering a question this
 	// method did not ask; only follow deals with those.
 	if resp.StatusCode >= 300 {
 		// Coded and hinted as R has it (BB-113): it was uncoded.
-		return nil, true, &Error{
+		return nil, delivered(true), &Error{
 			Body:    refusal("unexpected_redirect", redirectHint),
 			Message: fmt.Sprintf("unexpected redirect from %s", path),
 			Status:  resp.StatusCode,
@@ -375,12 +393,15 @@ func (t *transport) once(ctx context.Context, method, path string, body []byte, 
 	}
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, true, t.unreachable(err, timeout)
+		return nil, delivered(true), t.unreachable(err, timeout)
 	}
-	if len(bytes.TrimSpace(raw)) > 0 && !json.Valid(raw) {
-		return nil, true, t.notToft(resp, raw)
+	// Empty is not JSON either (BB-006): every app route answers a body, and
+	// the two that have nothing to say — no viewer, a cancel — say it with a
+	// 204. An empty 200 decoded into a zero JobRun reported as a success.
+	if resp.StatusCode != http.StatusNoContent && !json.Valid(raw) {
+		return nil, delivered(true), t.notToft(resp, raw)
 	}
-	return raw, true, nil
+	return raw, delivered(true), nil
 }
 
 // notToft is a success whose body is not JSON — a web page, most often: the
@@ -390,7 +411,9 @@ func (t *transport) once(ctx context.Context, method, path string, body []byte, 
 // an agent's loop retried forever.
 func (t *transport) notToft(resp *http.Response, raw []byte) *Error {
 	what := "a body that is not JSON"
-	if strings.HasPrefix(strings.ToLower(resp.Header.Get("Content-Type")), "text/html") ||
+	if len(bytes.TrimSpace(raw)) == 0 {
+		what = "an empty body"
+	} else if strings.HasPrefix(strings.ToLower(resp.Header.Get("Content-Type")), "text/html") ||
 		bytes.HasPrefix(bytes.TrimSpace(raw), []byte("<")) {
 		what = "a web page"
 	}

@@ -275,6 +275,11 @@ func (d DataClient) UpdateN(ctx context.Context, mutate func(map[string]any) (ma
 		return Document{}, badRequest(fmt.Sprintf("attempts is a whole number from 1, got %d", attempts),
 			"toft.Data.UpdateN(ctx, fn, 5), or toft.Data.Update(ctx, fn) for the default")
 	}
+	// A nil function panicked on the first read (BB-005).
+	if mutate == nil {
+		return Document{}, badRequest("Data.Update needs a function that changes the document, got nil",
+			"toft.Data.Update(ctx, func(s map[string]any) (map[string]any, error) { s[\"k\"] = 1; return s, nil })")
+	}
 	var last error
 	conflicts := 0
 	giveUp := time.Now().Add(RateLimitTimeout)

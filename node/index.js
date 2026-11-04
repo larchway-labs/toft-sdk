@@ -180,7 +180,7 @@ async function runnerRequest(baseUrl, token, method, path, body, timeoutMs = DEF
   } catch (err) {
     if (err instanceof ToftError) throw err;
     if (err.name === "AbortError") {
-      throw new ToftError(`Toft did not answer within ${timeoutMs}ms`);
+      throw new ToftError(`Toft did not answer within ${Number((timeoutMs / 1000).toFixed(3))}s`);
     }
     throw new ToftError(`cannot reach Toft: ${err.message}`);
   } finally {

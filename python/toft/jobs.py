@@ -101,6 +101,7 @@ MAX_LIST_LIMIT = 200
 _NAME_HINTS = {
     "name": "pass a job name as toft.toml declares it under [jobs.<name>]",
     "run id": "pass a run's id, as start() or list() returned it",
+    "job name": "pass a job name as toft.toml declares it under [jobs.<name>], or leave job out for every job",
 }
 
 
@@ -665,6 +666,10 @@ class Jobs:
         if job is not None and not isinstance(job, str):
             raise bad_request(f"list() takes a job name, got {type(job).__name__}",
                               hint="pass the job's name as a string, as toft.toml declares it under [jobs.<name>]")
+        if job is not None:
+            # An empty name was dropped from the query and answered with every
+            # run — a filter the caller asked for, silently not applied (BB-016).
+            _require_name(job, "list()", "job name")
         _check_limit(limit)
         return self._list(scope="app", job=job, status=status, limit=limit)
 
@@ -696,6 +701,10 @@ class Jobs:
         if job is not None and not isinstance(job, str):
             raise bad_request(f"mine() takes a job name, got {type(job).__name__}",
                               hint="pass the job's name as a string, as toft.toml declares it under [jobs.<name>]")
+        if job is not None:
+            # An empty name was dropped from the query and answered with every
+            # run — a filter the caller asked for, silently not applied (BB-016).
+            _require_name(job, "mine()", "job name")
         _check_limit(limit)
         try:
             return self._list(scope="viewer", job=job, status=None, limit=limit)

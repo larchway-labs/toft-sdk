@@ -310,6 +310,7 @@ store_put <- function(mount, source, name = NULL) {
   # A name resolves with storage(), not store(): a copy onto the mount is a
   # mounted volume's as much as a mounted store's — as put() is in Python and
   # Node, and Go's Mount.Put (BB-010). The signed-URL store_*() stay a store's.
+  if (missing(mount)) no_store("store_put()")
   if (is.character(mount) && length(mount) == 1 && !is.na(mount)) mount <- storage(mount)
   mount <- as_store(mount, "store_put()")
   # "" is the working directory, and copying there writes into the app's own
@@ -487,6 +488,9 @@ sign_get <- function(mount, name, attachment, call) {
 # this, a name reached `mount$name` on a character vector — a raw R error — and
 # only store() itself said not_mapped.
 as_store <- function(mount, what) {
+  # missing() follows the promise, so store_list() with no arguments lands
+  # here: it was R's own "argument "mount" is missing" (BB-005).
+  if (missing(mount)) no_store(what)
   if (is.character(mount) && length(mount) == 1 && !is.na(mount)) {
     return(store(mount))
   }
@@ -499,6 +503,11 @@ as_store <- function(mount, what) {
                       hint = "resolve the store with store(name) first"))
   }
   mount
+}
+
+no_store <- function(what) {
+  stop(toft_refusal("bad_request", sprintf("%s needs a store, as store() returns it, or its name, and was given none", what),
+                    hint = "pass store(\"name\"), or the name itself, as the first argument"))
 }
 
 # store_request is toft_request for the store routes, with the platform's
@@ -594,6 +603,10 @@ NAME_EXAMPLE <- c(
 )
 
 check_relative_name <- function(name, call) {
+  if (missing(name)) {
+    stop(toft_refusal("bad_request", sprintf("%s() needs an object name, and was given none", call),
+                      hint = paste0("pass the name as a string: ", NAME_EXAMPLE[[call]])))
+  }
   # One string: a number reached startsWith() as an uncoded error (BB-008's sweep).
   if (!is.character(name) || length(name) != 1 || is.na(name)) {
     stop(toft_refusal("bad_request", sprintf("%s()'s object name is one string, got %s", call,
