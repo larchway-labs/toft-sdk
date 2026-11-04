@@ -10,8 +10,10 @@
  * identically or an app written in one observes a platform the other cannot.
  *
  * **The retry is exactly one, and it is not a retry policy.** The platform's own
- * queue does the real work. This covers the far narrower case of a request never
- * reaching a handler: a 429 from the rate limiter, or a 5xx from in front of it.
+ * queue does the real work. This covers the far narrower case of a request that
+ * never reached a handler — a 429 from the rate limiter, a connection that never
+ * carried it — or one harmless to deliver twice: a GET, or a write with an
+ * Idempotency-Key. See `resendable`.
  *
  * **A retried request reuses its idempotency key.** Without that, this retry is
  * precisely the thing that starts the same job twice.
@@ -430,49 +432,7 @@ export class AppTransport {
   }
 
   async #attemptForm(path, form, headers) {
-    try {
-      return await this.#onceForm(path, form, headers);
-    } catch (err) {
-      if (!(err instanceof ToftError) || !err.autoRetry) throw err;
-      await sleep(err.retryAfter !== undefined ? err.retryAfter * 1000 : DEFAULT_RETRY_AFTER_MS);
-      return this.#onceForm(path, form, headers);
-    }
-  }
-
-  async #onceForm(path, form, headers) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this._timeoutMs);
-    let resp;
-    try {
-      resp = await fetch(`${this.baseUrl}${path}`, {
-        method: "POST",
-        redirect: "manual",
-        signal: controller.signal,
-        headers: {
-          Authorization: `Bearer ${this.token}`,
-          [CONTRACT_HEADER]: APP_CONTRACT_VERSION,
-          ...(headers ?? {}),
-        },
-        body: form,
-      });
-    } catch (err) {
-      // Our own refusal, raised while composing the request rather than by the
-      // network — the lazy `token` getter is the one that does this. Rethrown
-      // untouched: wrapping it in "cannot reach Toft at …" buried the real
-      // sentence inside a second one that named the wrong problem, and made a
-      // refusal no retry can help look like a network failure worth retrying.
-      if (err instanceof ToftError) throw err;
-      if (err.name === "AbortError") {
-        throw new ToftError(`Toft did not answer within ${this._timeoutMs}ms`);
-      }
-      throw new ToftError(`cannot reach Toft at ${this.baseUrl}: ${err.message}`);
-    } finally {
-      clearTimeout(timer);
-    }
-    refuseRedirect(resp, path);
-    const text = await resp.text();
-    if (!resp.ok) throw errorFromText(resp, text);
-    return text ? JSON.parse(text) : null;
+    return this.#attempt("POST", path, form, headers, true);
   }
 
   /**
@@ -518,22 +478,83 @@ export class AppTransport {
     return new Uint8Array(await resp.arrayBuffer());
   }
 
-  async #attempt(method, path, body, headers) {
+  /**
+   * One call: an attempt, and at most one resend when `resendable` allows it,
+   * all inside the one bound — "every call gives up after 30 s" is the promise,
+   * and a fresh bound per attempt made a stalled platform cost a minute.
+   */
+  async #attempt(method, path, body, headers, form = false) {
+    const deadline = Date.now() + this._timeoutMs;
     try {
-      return await this.#once(method, path, body, headers);
+      return await this.#once(method, path, body, headers, form, this._timeoutMs);
     } catch (err) {
-      if (!(err instanceof ToftError) || !err.autoRetry) throw err;
-      await sleep(err.retryAfter !== undefined ? err.retryAfter * 1000 : DEFAULT_RETRY_AFTER_MS);
-      return this.#once(method, path, body, headers);
+      if (!(err instanceof ToftError) || !resendable(method, headers, err)) throw err;
+      const wait = err.retryAfter !== undefined ? err.retryAfter * 1000 : DEFAULT_RETRY_AFTER_MS;
+      if (deadline - Date.now() <= wait) throw err;
+      await sleep(wait);
+      return this.#once(method, path, body, headers, form, Math.max(deadline - Date.now(), 1));
     }
   }
 
-  async #once(method, path, body, headers) {
-    const resp = await this.#fetch(method, path, body, headers, "manual");
+  /**
+   * One attempt, its answer read under the same timer as the request: a
+   * platform that sent its headers and stalled the body was unbounded.
+   */
+  async #once(method, path, body, headers, form, timeoutMs) {
+    // Serialized before the timer starts: a refusal of the body is not a
+    // network failure, and nothing should be in flight when it is thrown.
+    const json = form || body === undefined ? undefined : toJson(body);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let resp;
+    let text;
+    try {
+      try {
+        resp = await fetch(`${this.baseUrl}${path}`, {
+          method,
+          redirect: "manual",
+          signal: controller.signal,
+          headers: {
+            Authorization: `Bearer ${this.token}`,
+            [CONTRACT_HEADER]: APP_CONTRACT_VERSION,
+            ...(form || body === undefined ? {} : { "Content-Type": "application/json" }),
+            ...(headers ?? {}),
+          },
+          body: form ? body : json,
+        });
+      } catch (err) {
+        // Our own refusal, raised while composing the request — the lazy
+        // `token` getter is the one that does this — is rethrown untouched.
+        if (err instanceof ToftError) throw err;
+        throw this.#unreachable(err, timeoutMs, !neverConnected(err));
+      }
+      try {
+        text = await resp.text();
+      } catch (err) {
+        throw this.#unreachable(err, timeoutMs, true);
+      }
+    } finally {
+      clearTimeout(timer);
+    }
     refuseRedirect(resp, path);
-    const text = await resp.text();
     if (!resp.ok) throw errorFromText(resp, text);
-    return text ? JSON.parse(text) : null;
+    if (!text.trim()) return null;
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw notToft(this.baseUrl, resp, text);
+    }
+  }
+
+  /** A request that got no answer: uncoded and retryable, and how far it got. */
+  #unreachable(err, timeoutMs, sent) {
+    const timedOut = err?.name === "AbortError" || err?.name === "TimeoutError";
+    const out = new ToftError(timedOut
+      ? `Toft did not answer within ${timeoutMs}ms`
+      : `cannot reach Toft at ${this.baseUrl}: ${err?.message ?? err}`);
+    out.sent = timedOut || sent;
+    out.timedOut = timedOut;
+    return out;
   }
 
   async #fetch(method, path, body, headers, redirect) {
@@ -570,6 +591,63 @@ export class AppTransport {
       clearTimeout(timer);
     }
   }
+}
+
+/**
+ * Whether the single built-in resend fires.
+ *
+ * **Only a request that cannot have reached a handler, or one harmless to
+ * deliver twice.** A 429 is the rate limiter, which answers before any handler
+ * runs, and a connection that never opened delivered nothing: both are resent
+ * whatever the method. A 5xx — which a handler may have written after doing the
+ * work — or a connection lost once the request was on the wire is resent only
+ * for a GET, or a write carrying an Idempotency-Key the platform deduplicates
+ * on. A POST with no key, a PUT or a DELETE is not. A timeout is never resent:
+ * the call's bound is spent. The platform's own `retryable: false` vetoes all
+ * of it.
+ */
+export function resendable(method, headers, err) {
+  const idempotent = method === "GET" || Boolean(headers?.["Idempotency-Key"]);
+  if (err.status === undefined) {
+    if (err.code || err.offPlatform || err.timedOut || err.sent === undefined) return false;
+    return !err.sent || idempotent;
+  }
+  if (!err.autoRetry) return false;
+  return err.status === 429 || idempotent;
+}
+
+// The failures that happen before a connection carries anything: a name that
+// does not resolve, a port nobody listens on, a connect that timed out.
+const NEVER_CONNECTED = new Set([
+  "ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "EHOSTUNREACH", "ENETUNREACH",
+  "UND_ERR_CONNECT_TIMEOUT",
+]);
+
+function neverConnected(err) {
+  for (let e = err; e; e = e.cause) {
+    if (NEVER_CONNECTED.has(e.code)) return true;
+    if (Array.isArray(e.errors) && e.errors.some((x) => NEVER_CONNECTED.has(x?.code))) return true;
+  }
+  return false;
+}
+
+/**
+ * A success whose body is not JSON — a web page, most often: the address names
+ * some other server, or a proxy or sign-in page in front of the install. Coded
+ * and not retryable, as the CLI's `not_toft` is: the same address answers the
+ * same page next time, and a bare SyntaxError told an agent nothing.
+ */
+export function notToft(base, resp, text) {
+  const html = (resp.headers.get("Content-Type") ?? "").toLowerCase().startsWith("text/html")
+    || text.trimStart().startsWith("<");
+  const what = html ? "a web page" : "a body that is not JSON";
+  return refusal("not_toft",
+    `${base} answered ${resp.status} with ${what}, not Toft's API — is ${ENV_API_URL} this install's address?`,
+    {
+      status: resp.status,
+      hint: `${ENV_API_URL} is set by Toft for every app and job — check it names the install's own API, ` +
+        "not another server or a proxy or sign-in page in front of it",
+    });
 }
 
 async function errorFrom(resp) {

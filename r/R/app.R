@@ -48,15 +48,17 @@ app_base_path <- function() {
 #'
 #' The one function here that works off-platform, because a path is a path. On
 #' Toft this is the per-app scratch directory the platform provides; off it
-#' this is the session's temp directory, so a script under development does not
-#' have to be edited to run in either place.
+#' this is a private (0700) `toft-scratch-<uid>/<app>` under the temp directory,
+#' as in Python and Go — `<app>` keyed on the working directory — so a script
+#' under development does not have to be edited to run in either place, and
+#' what it wrote is there on the next run as it is between restarts.
 #'
 #' @return A path, created if it did not exist.
 #' @export
 scratch_dir <- function() {
   dir <- trimws(Sys.getenv(ENV_SCRATCH_DIR, ""))
   if (!nzchar(dir)) {
-    dir <- tempdir()
+    return(local_scratch_root())
   }
   if (!dir.exists(dir)) {
     dir.create(dir, recursive = TRUE, showWarnings = FALSE)
@@ -103,4 +105,35 @@ offset_zone <- function(raw) {
   if (hours == 0) return("UTC")
   # +05:00 is Etc/GMT-5.
   sprintf("Etc/GMT%s%d", if (m[2] == "+") "-" else "+", hours)
+}
+
+# Off-platform scratch: <tmp>/toft-scratch-<uid>/<app>, 0700, as Python's and
+# Go's (D-12; it was tempdir(), gone with the session). Never the shared temp
+# directory itself, where every user on the machine can read what an app wrote;
+# per user, so a directory another user created first is not adopted; per app,
+# keyed on the working directory. A parent that is not a real directory owned by
+# this user with no group or other access is not used — the session's own
+# tempdir() stands in.
+local_scratch_root <- function() {
+  tmp <- dirname(tempdir())
+  uid <- file.info(tempdir(), extra_cols = TRUE)$uid
+  if (is.null(uid) || is.na(uid)) uid <- Sys.info()[["effective_user"]]
+  parent <- file.path(tmp, paste0("toft-scratch-", uid))
+  app <- substr(paste0(as.character(openssl::sha256(getwd())), collapse = ""), 1, 12)
+  root <- file.path(parent, app)
+  for (d in c(parent, root)) {
+    if (!dir.exists(d)) dir.create(d, showWarnings = FALSE, mode = "0700")
+    if (!private_dir(d, uid)) {
+      return(tempdir())
+    }
+  }
+  root
+}
+
+private_dir <- function(path, uid) {
+  if (!dir.exists(path) || nzchar(Sys.readlink(path))) return(FALSE)
+  info <- file.info(path, extra_cols = TRUE)
+  if (.Platform$OS.type != "unix") return(TRUE)
+  if (!identical(as.integer(info$uid), as.integer(uid))) return(FALSE)
+  bitwAnd(as.integer(info$mode), strtoi("077", 8L)) == 0L
 }

@@ -415,7 +415,7 @@ class Notify:
 
     # ----------------------------------------------------------------- Status
 
-    def status(self, send: str | Send) -> Send:
+    def status(self, send: str | Send, **extra: Any) -> Send:
         """Read back one send this app made.
 
         The only thing an app may read about its own sends, and deliberately so:
@@ -423,7 +423,14 @@ class Notify:
         addresses its administrator finds interesting, whereas reading back an id
         it minted, about content it wrote, tells it nothing it did not know.
         """
-        send_id = send.id if isinstance(send, Send) else str(send)
+        # Every keyword refused coded, as the other notify calls refuse theirs —
+        # status("x", bogus=1) was Python's uncoded TypeError (BB-008).
+        _refuse_extras("status()", "", extra, "toft.notify.status(send_id)")
+        if send is not None and not isinstance(send, (str, Send)):
+            raise ToftError(f"status() takes a send or its id, got {type(send).__name__}", body={
+                "code": "bad_request", "retryable": False,
+                "hint": "pass the id of a send that slack(), send() or email() returned"})
+        send_id = "" if send is None else (send.id if isinstance(send, Send) else send)
         if not send_id:
             raise ToftError("status() needs the id of a send", body={
                 "code": "bad_request", "retryable": False,

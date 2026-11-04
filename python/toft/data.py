@@ -191,7 +191,14 @@ class Data:
             )
         last: ToftError | None = None
         conflicts = 0
-        attempts = max(1, attempts)
+        # A whole number from 1: max(1, "3") was a TypeError, and 0 or -1 was
+        # quietly read as 1 (BB-008's sweep; Node refuses the same).
+        if isinstance(attempts, bool) or not isinstance(attempts, int) or attempts < 1:
+            raise ToftError(
+                f"attempts is a whole number from 1, got {attempts!r}",
+                body={"code": "bad_request", "retryable": False,
+                      "hint": "toft.data.update(fn, attempts=5)"},
+            )
         give_up = time.monotonic() + RATE_LIMIT_TIMEOUT
 
         def limited(exc: ToftError) -> bool:

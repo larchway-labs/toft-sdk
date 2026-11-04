@@ -11,11 +11,12 @@ package toft
 //
 // **The retry is exactly one, and it is not a retry policy.** The platform's
 // own queue does the real work (one retry against the transport, then the send
-// is recorded failed). This retry covers the far narrower case of the request
-// never reaching a handler: a 429 from the rate limiter, or a 5xx from in front
-// of it. Anything more here would be a second source of truth about how a send
-// behaves, and the record in the platform — not this client — is what a
-// workflow relies on.
+// is recorded failed). This retry covers the far narrower case of a request
+// that never reached a handler — a 429 from the rate limiter, a connection that
+// never carried it — or one harmless to deliver twice: a GET, or a write with
+// an Idempotency-Key. See resendable. Anything more here would be a second
+// source of truth about how a send behaves, and the record in the platform —
+// not this client — is what a workflow relies on.
 //
 // **A retried request reuses its idempotency key**, which is the whole reason
 // the key is chosen by the caller rather than generated per attempt. Without
@@ -27,16 +28,19 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
 	"mime/multipart"
 	"net/http"
+	"net/http/httptrace"
 	"net/textproto"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -267,51 +271,128 @@ func fetchPresigned(ctx context.Context, url string) ([]byte, error) {
 }
 
 func (t *transport) attempt(ctx context.Context, method, path string, body []byte, contentType string, headers map[string]string, timeout time.Duration) ([]byte, error) {
-	out, err := t.once(ctx, method, path, body, contentType, headers, timeout)
+	// One bound for the whole call, both attempts and the wait between them:
+	// "every call gives up after 30 s" is the promise, and a fresh bound per
+	// attempt made a stalled platform cost a minute and two requests.
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	out, sent, err := t.once(ctx, method, path, body, contentType, headers, timeout)
 	if err == nil {
 		return out, nil
 	}
 	platform, ok := AsError(err)
-	if !ok || !platform.autoRetry() {
+	if !ok || !resendable(method, headers, sent, platform) {
 		return nil, err
 	}
 	wait := platform.RetryAfter
 	if !platform.retryGiven {
 		wait = defaultRetryAfter
 	}
+	// A wait that outlasts the call's bound would only end in a timeout that
+	// hides the answer the platform did give.
+	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) <= wait {
+		return nil, err
+	}
 	select {
 	case <-ctx.Done():
 		return nil, &Error{Message: ctx.Err().Error(), Wrapped: ctx.Err()}
 	case <-time.After(wait):
 	}
-	return t.once(ctx, method, path, body, contentType, headers, timeout)
+	out, _, err = t.once(ctx, method, path, body, contentType, headers, timeout)
+	return out, err
 }
 
-func (t *transport) once(ctx context.Context, method, path string, body []byte, contentType string, headers map[string]string, timeout time.Duration) ([]byte, error) {
+// resendable is whether the single built-in resend fires, given what the
+// first attempt got back.
+//
+// **The SDK resends only a request that cannot have reached a handler, or one
+// that is harmless to deliver twice.** A 429 is the rate limiter, which
+// answers before any handler runs, and a connection that never carried the
+// request's headers delivered nothing: those two are resent whatever the
+// method. Anything else — a 5xx, which a handler may have written after doing
+// the work, or a connection lost once the request was on the wire — is resent
+// only for a GET, or for a write carrying an Idempotency-Key the platform
+// deduplicates on. A POST with no key, a PUT or a DELETE is not: resending
+// one of those started a second run, or wrote over a document the first
+// attempt had already replaced. A timeout is never resent; the call's bound
+// is spent. The platform's own `retryable: false` vetoes all of it.
+func resendable(method string, headers map[string]string, sent bool, e *Error) bool {
+	if e.Status == 0 {
+		if e.Code() != "" || errors.Is(e, context.DeadlineExceeded) || errors.Is(e, context.Canceled) {
+			return false
+		}
+		return !sent || idempotent(method, headers)
+	}
+	if !e.autoRetry() {
+		return false
+	}
+	return e.Status == http.StatusTooManyRequests || idempotent(method, headers)
+}
+
+// idempotent is a request whose second delivery changes nothing the first did
+// not: a read, or a write the platform deduplicates by its key.
+func idempotent(method string, headers map[string]string) bool {
+	return method == http.MethodGet || headers["Idempotency-Key"] != ""
+}
+
+// once makes one attempt, and reports whether the request's headers went out —
+// after which a handler may have acted on it.
+func (t *transport) once(ctx context.Context, method, path string, body []byte, contentType string, headers map[string]string, timeout time.Duration) ([]byte, bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	var sent atomic.Bool
+	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{WroteHeaders: func() { sent.Store(true) }})
+
 	req, err := t.request(ctx, method, path, body, contentType, headers)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	resp, err := t.client.Do(req)
 	if err != nil {
-		return nil, t.unreachable(err)
+		return nil, sent.Load(), t.unreachable(err, timeout)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		return nil, fromResponse(resp)
+		return nil, true, fromResponse(resp)
 	}
 	// A redirect on an ordinary call is the platform answering a question this
 	// method did not ask; only follow deals with those.
 	if resp.StatusCode >= 300 {
-		return nil, &Error{
+		return nil, true, &Error{
 			Message: fmt.Sprintf("unexpected redirect from %s", path),
 			Status:  resp.StatusCode,
 		}
 	}
-	return io.ReadAll(resp.Body)
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, true, t.unreachable(err, timeout)
+	}
+	if len(bytes.TrimSpace(raw)) > 0 && !json.Valid(raw) {
+		return nil, true, t.notToft(resp, raw)
+	}
+	return raw, true, nil
+}
+
+// notToft is a success whose body is not JSON — a web page, most often: the
+// address names some other server, or a proxy or sign-in page in front of the
+// install. Coded and not retryable, as the CLI's not_toft is: the same address
+// answers the same page next time, and an uncoded error read as a network blip
+// an agent's loop retried forever.
+func (t *transport) notToft(resp *http.Response, raw []byte) *Error {
+	what := "a body that is not JSON"
+	if strings.HasPrefix(strings.ToLower(resp.Header.Get("Content-Type")), "text/html") ||
+		bytes.HasPrefix(bytes.TrimSpace(raw), []byte("<")) {
+		what = "a web page"
+	}
+	return &Error{
+		Status: resp.StatusCode,
+		Body: refusal("not_toft", "TOFT_API_URL is set by Toft for every app and job — check it names the "+
+			"install's own API, not another server or a proxy or sign-in page in front of it"),
+		Message: fmt.Sprintf("%s answered %d with %s, not Toft's API — is %s this install's address?",
+			t.base, resp.StatusCode, what, EnvAPIURL),
+	}
 }
 
 func (t *transport) request(ctx context.Context, method, path string, body []byte, contentType string, headers map[string]string) (*http.Request, error) {
@@ -334,7 +415,13 @@ func (t *transport) request(ctx context.Context, method, path string, body []byt
 	return req, nil
 }
 
-func (t *transport) unreachable(err error) error {
+func (t *transport) unreachable(err error, timeout ...time.Duration) error {
+	if errors.Is(err, context.DeadlineExceeded) && len(timeout) > 0 {
+		return &Error{
+			Message: fmt.Sprintf("Toft at %s did not answer within %s", t.base, timeout[0]),
+			Wrapped: err,
+		}
+	}
 	return &Error{
 		Message: fmt.Sprintf("cannot reach Toft at %s: %v", t.base, err),
 		Wrapped: err,

@@ -127,7 +127,8 @@ class Mount:
         a refusal that says so; ``full`` replaces. The bytes go
         straight to the object store — the platform signs, and never sees them.
         """
-        src = Path(source)
+        src = _check_source(source, "upload()")
+        _check_name_type(name)
         target = name or src.name
         _check_relative_name(target)
         try:
@@ -228,7 +229,8 @@ class Mount:
         app that tries to replace an object it was granted `write` on fails at
         the first wrong call rather than corrupting data slowly.
         """
-        src = Path(source)
+        src = _check_source(source, "put()")
+        _check_name_type(name)
         target_name = name or src.name
         _check_relative_name(target_name)
 
@@ -328,8 +330,27 @@ def _refused(code: str, message: str, status: int | None = None,
 _NAME_HINT = "use a relative name with forward slashes and no '.' or '..' segments"
 
 
+def _check_name_type(name: Any) -> None:
+    """A name that is not a string — ``upload(f, 5)`` — reached ``startswith``
+    and escaped as an uncoded AttributeError (BB-008's sweep)."""
+    if name is not None and not isinstance(name, str):
+        raise _refused("bad_request", f"an object's name is a string, got {type(name).__name__}",
+                       hint='pass the name as a string: upload("local.csv", "reports/2026-08.csv")')
+
+
+def _check_source(source: Any, call: str) -> Path:
+    """The local file ``put()`` and ``upload()`` read, as a path — ``Path({})``
+    was an uncoded TypeError (BB-008's sweep)."""
+    if isinstance(source, (str, os.PathLike)) and str(source):
+        return Path(source)
+    raise _refused("bad_request",
+                   f"{call} needs the path of a local file, got {type(source).__name__}",
+                   hint=f'pass the path of a file on this machine first: {call[:-2]}("report.csv")')
+
+
 def _check_relative_path(path: str) -> None:
     """A listing path: a relative name, with one trailing slash allowed."""
+    _check_name_type(path)
     _check_relative_name(path[:-1] if path.endswith("/") else path)
 
 
@@ -341,6 +362,7 @@ def _check_relative_name(name: str) -> None:
     traversal segment here would write into the app's own filesystem — over its
     code, in the worst case — rather than into the storage it was given.
     """
+    _check_name_type(name)
     if not name:
         raise _refused("invalid_name", "a name is required")
     if name.startswith("/") or name.endswith("/"):
@@ -496,7 +518,9 @@ def _resolve(name: str, folder: str | None, accessor: str) -> Mount:
             f"Name one: toft.{accessor}({name!r}, folder={named[0].folder!r})",
             hint=f"name the folder: toft.{accessor}({name!r}, folder={named[0].folder!r})")
 
-    if not available and not any(
+    # Only with no TOFT_STORAGE (unset or blank): "[]" is the platform saying
+    # nothing is mapped, and that is not_mapped (BB-023).
+    if not os.environ.get(ENV_STORAGE, "").strip() and not any(
             os.environ.get(v, "").strip()
             for v in ("TOFT_API_URL", "TOFT_APP_ID", "TOFT_RUN_ID", "TOFT_SCRATCH_DIR")):
         # Off the platform there is nothing to map, and "ask an administrator"

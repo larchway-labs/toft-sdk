@@ -8,8 +8,10 @@ Two things here are worth reading before changing them.
 
 **The retry is exactly one, and it is not a retry policy.** The platform's own
 queue does the real work (one retry against the transport, then the send is
-recorded failed). This retry covers the far narrower case of the request never
-reaching a handler: a 429 from the rate limiter, or a 5xx from in front of it.
+recorded failed). This retry covers the far narrower case of a request that
+never reached a handler — a 429 from the rate limiter, a connection that never
+carried it — or one harmless to deliver twice: a GET, or a write with an
+Idempotency-Key. See :func:`_resendable`.
 Anything more here would be a second source of truth about how a send behaves,
 and the record in the platform — not this client — is what a workflow relies on.
 
@@ -21,9 +23,11 @@ twice.
 
 from __future__ import annotations
 
+import http.client
 import json
 import mimetypes
 import os
+import socket
 import time
 import urllib.error
 import urllib.request
@@ -293,13 +297,21 @@ class AppTransport:
         headers: Mapping[str, str],
         timeout: float,
     ) -> Any:
+        # One bound for the whole call, both attempts and the wait between
+        # them: "every call gives up after 30 s" is the promise.
+        deadline = time.monotonic() + timeout
         try:
             return self._once(method, path, data, content_type, headers, timeout)
         except ToftError as exc:
-            if not exc._auto_retry:
+            if not _resendable(method, headers, exc):
                 raise
-            time.sleep(exc.retry_after if exc.retry_after is not None else DEFAULT_RETRY_AFTER)
-            return self._once(method, path, data, content_type, headers, timeout)
+            wait = exc.retry_after if exc.retry_after is not None else DEFAULT_RETRY_AFTER
+            remaining = deadline - time.monotonic()
+            if remaining <= wait:
+                raise
+            time.sleep(wait)
+            return self._once(method, path, data, content_type, headers,
+                              max(deadline - time.monotonic(), 0.001))
 
     def _once(
         self,
@@ -321,13 +333,78 @@ class AppTransport:
         try:
             with _open_without_redirects(req, timeout) as resp:
                 payload = resp.read()
-                return json.loads(payload) if payload else None
+                status = resp.status
+                html = (resp.headers.get("Content-Type") or "").lower().startswith("text/html")
         except urllib.error.HTTPError as exc:
             raise _from_http_error_or_redirect(exc, path) from None
         except urllib.error.URLError as exc:
-            raise ToftError(
-                f"cannot reach Toft at {self._base}: {exc.reason}"
-            ) from None
+            # urllib wraps what failed while connecting and writing the
+            # request; nothing reached a handler — unless it timed out, which
+            # spends the call's bound whichever side it happened on.
+            timed_out = isinstance(exc.reason, (TimeoutError, socket.timeout))
+            raise _transport_error(
+                f"Toft at {self._base} did not answer within {timeout:g}s" if timed_out
+                else f"cannot reach Toft at {self._base}: {exc.reason}",
+                sent=timed_out, timed_out=timed_out) from None
+        except (TimeoutError, socket.timeout):
+            raise _transport_error(f"Toft at {self._base} did not answer within {timeout:g}s",
+                                   sent=True, timed_out=True) from None
+        except (OSError, http.client.HTTPException) as exc:
+            # Raised while reading the answer: the request was on the wire,
+            # and a handler may have acted on it.
+            raise _transport_error(f"cannot reach Toft at {self._base}: {exc}", sent=True) from None
+        if not payload.strip():
+            return None
+        try:
+            return json.loads(payload)
+        except ValueError:
+            raise _not_toft(self._base, status, html or payload.lstrip().startswith(b"<")) from None
+
+
+def _transport_error(message: str, *, sent: bool, timed_out: bool = False) -> ToftError:
+    """A request that got no answer: uncoded and retryable, with what the
+    resend rule needs to know about how far it got."""
+    err = ToftError(message)
+    err._sent = sent
+    err._timed_out = timed_out
+    return err
+
+
+def _resendable(method: str, headers: Mapping[str, str], exc: ToftError) -> bool:
+    """Whether the single built-in resend fires.
+
+    **Only a request that cannot have reached a handler, or one harmless to
+    deliver twice.** A 429 is the rate limiter, which answers before any
+    handler runs, and a connection that never carried the request delivered
+    nothing: both are resent whatever the method. A 5xx — which a handler may
+    have written after doing the work — or a connection lost once the request
+    was on the wire is resent only for a GET, or a write carrying an
+    Idempotency-Key the platform deduplicates on. A POST with no key, a PUT or a
+    DELETE is not. A timeout is never resent: the call's bound is spent. The
+    platform's own ``retryable: false`` vetoes all of it.
+    """
+    idempotent = method == "GET" or bool(headers.get("Idempotency-Key"))
+    if exc.status is None:
+        if exc.code or getattr(exc, "_timed_out", False) or not hasattr(exc, "_sent"):
+            return False
+        return not exc._sent or idempotent
+    if not exc._auto_retry:
+        return False
+    return exc.status == 429 or idempotent
+
+
+def _not_toft(base: str, status: int, html: bool) -> ToftError:
+    """A success whose body is not JSON — a web page, most often: the address
+    names some other server, or a proxy or sign-in page in front of the install.
+    Coded and not retryable, as the CLI's ``not_toft`` is: the same address
+    answers the same page next time."""
+    what = "a web page" if html else "a body that is not JSON"
+    return ToftError(
+        f"{base} answered {status} with {what}, not Toft's API — is {ENV_API_URL} this install's address?",
+        status=status,
+        body={"code": "not_toft", "retryable": False,
+              "hint": f"{ENV_API_URL} is set by Toft for every app and job — check it names the install's "
+                      "own API, not another server or a proxy or sign-in page in front of it"})
 
 
 def _open_without_redirects(req: urllib.request.Request, timeout: float):

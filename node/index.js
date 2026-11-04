@@ -214,7 +214,9 @@ export class Run {
   #token;
   #outputUri;
 
-  constructor({ baseUrl, token, id } = {}) {
+  // `outputUri` is taken here and never handed back: a public getter returned
+  // the presigned URL to anything that read `toft.run.outputUri` (BB-013).
+  constructor({ baseUrl, token, id, outputUri } = {}) {
     this.#baseUrl = baseUrl ?? process.env.TOFT_API_URL;
     this.#token = token ?? process.env.TOFT_JOB_TOKEN;
     this.id = id ?? process.env.TOFT_RUN_ID;
@@ -225,7 +227,7 @@ export class Run {
      * that must not repeat a side effect checks this.
      */
     this.rerunOf = process.env.TOFT_RERUN_OF || null;
-    this.#outputUri = process.env.TOFT_OUTPUT_URI ?? "";
+    this.#outputUri = outputUri ?? process.env.TOFT_OUTPUT_URI ?? "";
     /**
      * `trigger` is *how* this run started — `app`, `viewer`, `cli`, `schedule`
      * or `ui`, the run's `startedBy`. `triggerRole` is *who* — one of the ROLE_*
@@ -268,18 +270,6 @@ export class Run {
   }
 
   /**
-   * The presigned URL `writeOutput` PUTs to. A credential: never log it. An
-   * accessor over a private field, so it is on no instance's own properties.
-   */
-  get outputUri() {
-    return this.#outputUri;
-  }
-
-  set outputUri(value) {
-    this.#outputUri = value ?? "";
-  }
-
-  /**
    * The run's facts, with no credential: neither the job token nor the
    * output URL, only whether there is somewhere to write output.
    */
@@ -293,7 +283,7 @@ export class Run {
       params: this.params,
       scheduled_for: this.scheduledForText,
       deadline: process.env.TOFT_DEADLINE || null,
-      has_output_location: this.outputUri !== "",
+      has_output_location: this.#outputUri !== "",
     };
   }
 
@@ -374,7 +364,7 @@ export class Run {
    */
   async writeOutput(data) {
     noMoreArgs("writeOutput()", arguments, 1, "await run.writeOutput(data)");
-    if (!this.outputUri) {
+    if (!this.#outputUri) {
       throw refusal("no_output", "this run has no output location",
         { hint: "the runner sets TOFT_OUTPUT_URI for every run on the platform — call writeOutput from inside a job" });
     }
@@ -388,7 +378,7 @@ export class Run {
     }
     let resp;
     try {
-      resp = await fetchStore(this.outputUri, { method: "PUT", body: data });
+      resp = await fetchStore(this.#outputUri, { method: "PUT", body: data });
     } catch (err) {
       if (err instanceof ToftError) throw err;
       throw new ToftError(`uploading output: ${err.message}`);

@@ -230,6 +230,8 @@ export class Mount {
    */
   async put(source, name) {
     noMoreArgs("put()", arguments, 2, 'await toft.store("reports").put("nightly.parquet", "2026-08.parquet")');
+    checkSource(source, "put()");
+    if (name != null && typeof name !== "string") checkRelativeName(name);
     const targetName = name ?? path.basename(source);
     checkRelativeName(targetName);
 
@@ -276,6 +278,7 @@ export class Mount {
   /** One page of what is under `path`; names are relative to it. */
   async list(listPath = "", options) {
     const { cursor = "" } = takeOptions("list()", options, ["cursor"], 'mount.list("reports/", { cursor })');
+    if (listPath != null && typeof listPath !== "string") checkRelativeName(listPath);
     if (listPath) checkRelativeName(listPath.replace(/\/$/, ""));
     const page =
       (await transport().get(
@@ -302,6 +305,8 @@ export class Mount {
    */
   async upload(source, name) {
     noMoreArgs("upload()", arguments, 2, 'await toft.store("reports").upload("nightly.parquet", "2026-08.parquet")');
+    checkSource(source, "upload()");
+    if (name != null && typeof name !== "string") checkRelativeName(name);
     const target = name || path.basename(source);
     checkRelativeName(target);
     let data;
@@ -418,6 +423,20 @@ function refused(code, message, { hint, ...options } = {}) {
   return new ToftError(message, { ...options, body });
 }
 
+/**
+ * The local file `put()` and `upload()` read, held to a path string before it
+ * reaches `path.basename` (a TypeError) or `fs.readFile`, which reads a number
+ * as a file descriptor (BB-008).
+ */
+function checkSource(source, call) {
+  if (typeof source !== "string" || !source) {
+    throw refused("bad_request",
+      `${call} needs the path of a local file as a string, got ` +
+        `${source === "" ? '""' : source === null ? "null" : Array.isArray(source) ? "an array" : typeof source}`,
+      { hint: `pass the path of a file on this machine first: ${call.replace("()", "")}("report.csv")` });
+  }
+}
+
 const NAME_HINT = "use a relative name with forward slashes and no '.' or '..' segments";
 
 function encodeName(name) {
@@ -457,6 +476,13 @@ async function sendSigned(signed, body) {
  * worst case — rather than into the storage it was given.
  */
 function checkRelativeName(name) {
+  // A name that is not a string — `upload(file, {})` — reached `startsWith`
+  // and escaped as a TypeError, uncoded (BB-008).
+  if (name !== undefined && name !== null && typeof name !== "string") {
+    throw refused("bad_request",
+      `an object's name is a string, got ${Array.isArray(name) ? "an array" : typeof name}`,
+      { hint: 'pass the name as a string: upload("local.csv", "reports/2026-08.csv")' });
+  }
   if (!name) throw refused("invalid_name", "a name is required");
   if (name.startsWith("/") || name.endsWith("/")) {
     throw refused("invalid_name", `a name is relative to the mount, got ${JSON.stringify(name)}`);
@@ -669,7 +695,9 @@ function resolveMount(name, folder, accessor) {
   // Off the platform there is nothing to map, and "ask an administrator" would
   // send somebody to one over a laptop. Same code as every other call that
   // needs the platform.
-  if (!all.length && !onPlatform()) {
+  // Only with no TOFT_STORAGE (unset or blank): "[]" is the platform saying
+  // nothing is mapped, and that is not_mapped (BB-023).
+  if (!(process.env[ENV_STORAGE] ?? "").trim() && !onPlatform()) {
     throw refused("off_platform",
       `${accessor}(${JSON.stringify(name)}) needs the storage Toft maps into a deployed app ` +
         `(${ENV_STORAGE}) — it only resolves in an app running on the platform`,

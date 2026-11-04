@@ -243,6 +243,16 @@ type WaitOptions struct {
 // wait_cancelled, not retryable: somebody chose to stop. The run keeps going
 // either way.
 func (r JobRun) Wait(ctx context.Context, opts WaitOptions) (JobRun, error) {
+	// Refused before anything else, a finished run included: a negative
+	// Timeout read as "no timeout" (BB-009, as Python and Node refuse it).
+	if opts.Timeout < 0 {
+		return r, badRequest(fmt.Sprintf("WaitOptions.Timeout is how long to wait, 0 or more — got %s", opts.Timeout),
+			"WaitOptions{Timeout: time.Minute}, or zero to wait for as long as the run takes")
+	}
+	if opts.PollInterval < 0 {
+		return r, badRequest(fmt.Sprintf("WaitOptions.PollInterval is how often to re-read the run, 0 or more — got %s", opts.PollInterval),
+			"WaitOptions{PollInterval: 2 * time.Second}, or zero for two seconds")
+	}
 	deadline := r.requestDeadline
 	if opts.Request != nil {
 		deadline = requestDeadline(opts.Request.Header)
@@ -426,6 +436,12 @@ type LogLine struct {
 // Logs reads this run's captured output after the line numbered after; 0 is
 // from the start.
 func (r JobRun) Logs(ctx context.Context, after int) ([]LogLine, error) {
+	// A cursor is a seq from 0: -1 reached the platform, which read it as 0
+	// (BB-025, as Node refuses it).
+	if after < 0 {
+		return nil, badRequest(fmt.Sprintf("Logs takes the seq to read after, 0 or more — got %d", after),
+			"run.Logs(ctx, 0) for the first lines, then the last line's Seq")
+	}
 	t, err := client()
 	if err != nil {
 		return nil, err

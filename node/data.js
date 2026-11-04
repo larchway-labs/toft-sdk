@@ -140,6 +140,17 @@ export class Data {
     const { attempts = DEFAULT_ATTEMPTS, rateLimitTimeout = RATE_LIMIT_TIMEOUT } = takeOptions(
       "data.update()", options, ["attempts", "rateLimitTimeout"],
       "toft.data.update(fn, { attempts: 5, rateLimitTimeout: 60 })");
+    // Before any request: `update("notfn")` read the document and then threw
+    // TypeError: mutator is not a function, uncoded (BB-008).
+    if (!Number.isInteger(attempts) || attempts < 1) {
+      throw refusal("bad_request", `attempts is a whole number from 1, got ${String(attempts)}`,
+        { hint: "update(fn, { attempts: 5 })" });
+    }
+    if (typeof mutator !== "function") {
+      throw refusal("bad_request",
+        `data.update() takes a function that is given the document, got ${mutator === null ? "null" : typeof mutator}`,
+        { hint: "toft.data.update((doc) => { doc.runs = (doc.runs ?? 0) + 1; })" });
+    }
     if (typeof rateLimitTimeout !== "number" || !(rateLimitTimeout >= 0)) {
       // A negative or NaN timeout was taken as 0 without a word.
       throw refusal("bad_request",

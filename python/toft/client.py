@@ -127,6 +127,17 @@ class _RunSecrets:
 _SECRETS: "weakref.WeakKeyDictionary[Run, _RunSecrets]" = weakref.WeakKeyDictionary()
 
 
+# Module-level, not methods: anything on the class is reachable through
+# dir(toft.run), and run._output_uri() handed back the presigned URL — and
+# run._transport()._token() the job token — to any code that walked it (BB-013).
+def _run_transport(run: "Run") -> "_RunnerTransport":
+    return _RunnerTransport(run._base_url, _SECRETS[run].token)
+
+
+def _run_output_uri(run: "Run") -> str:
+    return _SECRETS[run].output_uri
+
+
 class Run:
     """The job's own view of itself: who started it, its params, its deadline;
     report progress, log, write output.
@@ -191,12 +202,6 @@ class Run:
     def __deepcopy__(self, memo: Any) -> "Run":
         return self
 
-    def _transport(self) -> "_RunnerTransport":
-        return _RunnerTransport(self._base_url, _SECRETS[self].token)
-
-    def _output_uri(self) -> str:
-        return _SECRETS[self].output_uri
-
     @classmethod
     def from_env(cls) -> "Run":
         base_url = os.environ.get("TOFT_API_URL")
@@ -251,7 +256,7 @@ class Run:
         body: dict[str, Any] = {"version": RUNNER_CONTRACT_VERSION, "percent": int(percent)}
         if message:
             body["message"] = str(message)
-        self._transport().request("POST", "/api/v1/runner/progress", body)
+        _run_transport(self).request("POST", "/api/v1/runner/progress", body)
 
     def log(self, message: str, error: bool = False) -> None:
         """Write one line to this run's log.
@@ -269,7 +274,7 @@ class Run:
         path would work in shared mode and would then make an app written
         against it unable to move to isolated mode.
         """
-        output_uri = self._output_uri()
+        output_uri = _run_output_uri(self)
         if not output_uri:
             raise ToftError("this run has no output location",
                             body={"code": "no_output", "retryable": False,

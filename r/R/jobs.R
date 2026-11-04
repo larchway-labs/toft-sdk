@@ -162,8 +162,10 @@ viewer_jobs <- function(request) {
 
 #' @export
 print.toft_viewer_jobs <- function(x, ...) {
-  # Never the blob: it is a bearer credential for one session.
-  cat("<toft viewer jobs (a signed-in person; the app cannot see who)>\n")
+  # Never the blob: it is a bearer credential for one session. Nor a claim
+  # about whether the app can see who it names — "the app cannot see who" was
+  # printed with viewer identity on too (D-17); viewer(req) is what answers.
+  cat("<toft viewer jobs: starts and reads runs as this request's viewer; viewer(req) says who, where viewer identity is on>\n")
   invisible(x)
 }
 
@@ -421,6 +423,20 @@ job_refresh <- function(run) {
 #' @export
 job_wait <- function(run, timeout = NULL, request = NULL, poll = WAIT_POLL_SECONDS) {
   check_run(run, "job_wait")
+  # Refused before anything else, a finished run included: a negative or NaN
+  # timeout ended the wait at once as a retryable wait_timeout (BB-009, as the
+  # other three refuse it).
+  if (!is.null(timeout) &&
+      (!is.numeric(timeout) || length(timeout) != 1 || is.na(timeout) || !is.finite(timeout) || timeout < 0)) {
+    stop(toft_refusal("bad_request", sprintf(
+      "job_wait()'s timeout is seconds to wait, 0 or more - got %s", deparse(timeout)),
+      hint = "job_wait(run, timeout = 60), or leave it NULL to wait for as long as the run takes"))
+  }
+  if (!is.numeric(poll) || length(poll) != 1 || is.na(poll) || !is.finite(poll) || poll <= 0) {
+    stop(toft_refusal("bad_request", sprintf(
+      "job_wait()'s poll is seconds between reads, more than 0 - got %s", deparse(poll)),
+      hint = "job_wait(run, poll = 2)"))
+  }
   # A finished run returns at once: there is nothing to outlive (BB-072).
   if (!is.null(run$status) && !run$status %in% OPEN_RUN_STATUSES) {
     return(run)
@@ -478,6 +494,14 @@ job_wait <- function(run, timeout = NULL, request = NULL, poll = WAIT_POLL_SECON
 #' @export
 job_logs <- function(run, after_seq = 0) {
   check_run(run, "job_logs")
+  # A whole number from 0, as the other three hold it: -1 reached the
+  # platform, which read it as 0 (BB-025).
+  if (!is.numeric(after_seq) || length(after_seq) != 1 || is.na(after_seq) ||
+      !is.finite(after_seq) || after_seq < 0 || after_seq != floor(after_seq)) {
+    stop(toft_refusal("bad_request", sprintf(
+      "job_logs()'s after_seq is the seq to read after, a whole number from 0 - got %s", deparse(after_seq)),
+      hint = "job_logs(run, 0) for the first lines, then the last line's seq"))
+  }
   resp <- toft_request("GET", paste0("/api/v1/app/job-runs/", utils::URLencode(run$id, reserved = TRUE), "/logs"),
                        query = list(after = after_seq), extra_headers = run_headers(run))
   lines <- if (is.null(resp$lines)) list() else resp$lines

@@ -3,6 +3,7 @@ package toft
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -112,6 +113,12 @@ func (m Mount) Put(source, name string) (string, error) {
 		return "", localFileError("read", source, err)
 	}
 	defer in.Close()
+	// A directory opens, and then failed the copy as write_failed — the mount's
+	// fault, with an empty object left behind — when the source was (BB-008's
+	// sweep).
+	if info, err := in.Stat(); err == nil && info.IsDir() {
+		return "", localFileError("read", source, errors.New("is a directory, and Put copies one file"))
+	}
 	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
 		return "", localWriteError(destination, err)
 	}
@@ -337,7 +344,9 @@ func storageIn(name string, folder *string, accessor string) (Mount, error) {
 			"%d mounts are named %q — %s. Name one: toft.%sIn(%q, %q)",
 			len(named), name, describeFolders(named), accessor, name, named[0].Folder)}
 	}
-	if len(available) == 0 && !onPlatform() {
+	// Only with no TOFT_STORAGE (unset or blank): "[]" is the platform saying
+	// nothing is mapped, and that is not_mapped (BB-023).
+	if strings.TrimSpace(os.Getenv(EnvStorage)) == "" && !onPlatform() {
 		// Off the platform there is nothing to map, and "ask an administrator"
 		// would send somebody to one over a laptop — the code Node raises.
 		return Mount{}, &Error{Body: refusal("off_platform", "set "+EnvStorage+" to a JSON array of mounts to stand one in locally"),

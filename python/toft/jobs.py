@@ -67,6 +67,7 @@ import datetime
 import json
 import re
 import sys
+import math
 import time
 from dataclasses import dataclass, field
 from collections.abc import Mapping
@@ -394,6 +395,17 @@ class JobRun:
 
         Raises :class:`WaitTimeout` when ``timeout`` passes first.
         """
+        # Before anything else, a finished run included: timeout=-1 was a
+        # wait_timeout marked retryable, NaN a wait with no end (BB-009).
+        if timeout is not None and (isinstance(timeout, bool) or not isinstance(timeout, (int, float))
+                                    or not math.isfinite(timeout) or timeout < 0):
+            raise ToftError(f"timeout is seconds to wait, 0 or more — got {timeout!r}", body={
+                "code": "bad_request", "retryable": False,
+                "hint": "run.wait(timeout=60), or leave it out to wait for as long as the run takes"})
+        if (isinstance(poll_interval, bool) or not isinstance(poll_interval, (int, float))
+                or not math.isfinite(poll_interval) or poll_interval <= 0):
+            raise ToftError(f"poll_interval is seconds between reads, more than 0 — got {poll_interval!r}", body={
+                "code": "bad_request", "retryable": False, "hint": "run.wait(poll_interval=2)"})
         # A finished run returns at once, so there is nothing to outlive the
         # request with: the guard is for a wait that would block (BB-072).
         if self.done:
@@ -507,7 +519,13 @@ class JobRun:
 
     def logs(self, after_seq: int = 0) -> list[dict]:
         """Log lines after ``after_seq``: ``{seq, at, stream, line}`` each."""
-        raw = transport().get(f"{RUNS_PATH}/{quote(self.id, safe='')}/logs?after={int(after_seq)}", self._headers)
+        # A whole number from 0, as Node and Go hold it: -1 reached the
+        # platform, and int("x") was an uncoded ValueError (BB-025).
+        if isinstance(after_seq, bool) or not isinstance(after_seq, int) or after_seq < 0:
+            raise ToftError(f"logs() takes the seq to read after, a whole number from 0 — got {after_seq!r}",
+                            body={"code": "bad_request", "retryable": False,
+                                  "hint": "run.logs(0) for the first lines, then the last line's seq"})
+        raw = transport().get(f"{RUNS_PATH}/{quote(self.id, safe='')}/logs?after={after_seq}", self._headers)
         return list(raw.get("lines") or []) if raw else []
 
     def tail(self, poll_interval: float = 2.0) -> Iterator[dict]:

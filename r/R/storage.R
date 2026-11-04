@@ -66,6 +66,30 @@ mounts <- function() {
   })
 }
 
+# The local file store_put() and store_upload() read, refused coded before it
+# is opened: a path that is not there is not_found, as in Python, Node and Go
+# (BB-026); a directory, an unreadable file or something that is not one path is
+# bad_request — a directory reached readBin() as "cannot open the connection",
+# an uncoded simpleError (BB-008).
+check_local_file <- function(source, what, example) {
+  if (!is.character(source) || length(source) != 1 || is.na(source) || !nzchar(source)) {
+    stop(toft_refusal("bad_request", sprintf("%s needs the path of a local file, as one string", what),
+                      hint = paste0("pass the path of a local file: ", example)))
+  }
+  if (!file.exists(source)) {
+    stop(toft_refusal("not_found", sprintf("no such file: %s", source), hint = LOCAL_FILE_HINT))
+  }
+  if (dir.exists(source)) {
+    stop(toft_refusal("bad_request", sprintf("%s is a directory, and %s copies one file", source, what),
+                      hint = paste0("pass the path of a file, not a folder: ", example)))
+  }
+  if (file.access(source, 4) != 0) {
+    stop(toft_refusal("bad_request", sprintf("cannot read %s: permission denied", source),
+                      hint = sprintf("check that this process can read %s", source)))
+  }
+  invisible(TRUE)
+}
+
 LOCAL_FILE_HINT <- "check the path — a relative one is resolved against the working directory, getwd()"
 
 STORAGE_ENV_HINT <- paste0(
@@ -197,7 +221,9 @@ resolve_mount <- function(name, folder, accessor) {
     ), hint = sprintf("name the folder: %s('%s', folder = '%s')", accessor, name, named[[1]]$folder)))
   }
 
-  if (length(available) == 0 &&
+  # Only with no TOFT_STORAGE (unset or blank): "[]" is the platform saying
+  # nothing is mapped, and that is not_mapped (BB-023).
+  if (!nzchar(trimws(Sys.getenv(ENV_STORAGE, ""))) &&
       !any(nzchar(trimws(Sys.getenv(c("TOFT_API_URL", "TOFT_APP_ID", "TOFT_RUN_ID", "TOFT_SCRATCH_DIR")))))) {
     # Off the platform there is nothing to map, and "ask an administrator"
     # would send somebody to one over a laptop — the code the others raise.
@@ -279,6 +305,10 @@ store <- function(name, folder = NULL) {
 #' @return The path it was written to, invisibly.
 #' @export
 store_put <- function(mount, source, name = NULL) {
+  # A name resolves with storage(), not store(): a copy onto the mount is a
+  # mounted volume's as much as a mounted store's — as put() is in Python and
+  # Node, and Go's Mount.Put (BB-010). The signed-URL store_*() stay a store's.
+  if (is.character(mount) && length(mount) == 1 && !is.na(mount)) mount <- storage(mount)
   mount <- as_store(mount, "store_put()")
   # "" is the working directory, and copying there writes into the app's own
   # tree: a store that is not mounted is reached through the platform instead.
@@ -288,13 +318,8 @@ store_put <- function(mount, source, name = NULL) {
                  mount$name),
       hint = "use store_upload(), which reaches the store through the platform"))
   }
-  if (missing(source) || !nzchar(source)) {
-    stop(toft_refusal("bad_request", "store_put() needs the path of a local file to copy",
-                      hint = "pass the path of a local file: store_put(s, \"report.csv\")"))
-  }
-  if (!file.exists(source)) {
-    stop(toft_refusal("bad_request", sprintf("no such file: %s", source), hint = LOCAL_FILE_HINT))
-  }
+  if (missing(source)) source <- ""
+  check_local_file(source, "store_put()", "store_put(s, \"report.csv\")")
   target <- if (is.null(name)) basename(source) else name
   check_relative_name(target)
 
@@ -358,10 +383,8 @@ store_list <- function(mount, path = "", cursor = "") {
 #' @export
 store_upload <- function(mount, source, name = NULL) {
   mount <- as_store(mount, "store_upload()")
-  if (missing(source) || !file.exists(source)) {
-    stop(toft_refusal("bad_request", sprintf("no such file: %s", if (missing(source)) "" else source),
-                      hint = LOCAL_FILE_HINT))
-  }
+  if (missing(source)) source <- ""
+  check_local_file(source, "store_upload()", "store_upload(s, \"report.csv\")")
   target <- if (is.null(name) || !nzchar(name)) basename(source) else name
   check_relative_name(target)
   data <- readBin(source, "raw", n = file.info(source)$size)
@@ -557,6 +580,11 @@ check_signed_status <- function(status) {
 NAME_HINT <- "use a relative name with forward slashes and no '.' or '..' segments"
 
 check_relative_name <- function(name) {
+  # One string: a number reached startsWith() as an uncoded error (BB-008's sweep).
+  if (!is.character(name) || length(name) != 1 || is.na(name)) {
+    stop(toft_refusal("bad_request", sprintf("an object's name is one string, got %s", deparse(name)),
+                      hint = "pass the name as a string: store_upload(s, \"local.csv\", \"reports/2026-08.csv\")"))
+  }
   if (!nzchar(name)) {
     stop(toft_refusal("invalid_name", "a name is required", hint = NAME_HINT))
   }

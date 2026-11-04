@@ -310,10 +310,22 @@ export class JobRun {
   async wait(options) {
     const { timeoutMs, pollIntervalMs = 2000, headers } = takeOptions("wait()", options,
       ["timeoutMs", "pollIntervalMs", "headers"], "run.wait({ timeoutMs: 60000, pollIntervalMs: 2000 })");
+    // Before anything else, a finished run included: a negative timeout was a
+    // wait_timeout marked retryable, and NaN no timeout at all (BB-009).
+    if (timeoutMs !== undefined && timeoutMs !== null &&
+        (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs) || timeoutMs < 0)) {
+      throw refusal("bad_request", `timeoutMs is milliseconds to wait, 0 or more — got ${String(timeoutMs)}`,
+        { hint: "run.wait({ timeoutMs: 60000 }), or leave it out to wait for as long as the run takes" });
+    }
+    if (typeof pollIntervalMs !== "number" || !Number.isFinite(pollIntervalMs) || pollIntervalMs <= 0) {
+      throw refusal("bad_request", `pollIntervalMs is milliseconds between reads, more than 0 — got ${String(pollIntervalMs)}`,
+        { hint: "run.wait({ pollIntervalMs: 2000 })" });
+    }
+    const limit = timeoutMs ?? undefined;
     // A finished run returns at once: there is nothing to outlive (BB-072).
     if (this.done) return this;
-    this.#guardRequest(timeoutMs, headers);
-    const deadline = timeoutMs === undefined ? undefined : Date.now() + timeoutMs;
+    this.#guardRequest(limit, headers);
+    const deadline = limit === undefined ? undefined : Date.now() + limit;
     let current = this;
     for (;;) {
       try {
