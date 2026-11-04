@@ -45,7 +45,7 @@ import { basename } from "node:path";
 import { readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 
-import { ToftError, fileRefusal, noMoreArgs, refusal, toJson, transport } from "./transport.js";
+import { ToftError, fileRefusal, noMoreArgs, refusal, takeOptions, toJson, transport } from "./transport.js";
 
 const SLACK_PATH = "/api/v1/app/notify/slack";
 const SLACK_FILE_PATH = "/api/v1/app/notify/slack/file";
@@ -478,9 +478,22 @@ export class Notify {
    * processes: a cron-driven sender that wants "at most one report per week
    * however many times I run" should pass its own stable key.
    */
-  async email({ to, subject, text, html, cc, bcc, attachments, idempotencyKey, ...rest } = {}) {
+  async email(message, options) {
+    const { to, subject, text, html, cc, bcc, attachments, idempotencyKey: inMessage, ...rest } = message ?? {};
     refuseExtras("email()", "email", rest,
       "toft.notify.email({ to, subject, text, html, cc, bcc, attachments, idempotencyKey })");
+    // The key may come in the message or, as every other send takes it, in an
+    // options object after it — the second was dropped for a random key
+    // (BB-075). Both, and different, is a caller who meant one of them.
+    const { idempotencyKey: inOptions } = takeOptions("email()", options, ["idempotencyKey"],
+      "toft.notify.email({ to, subject, text }, { idempotencyKey })");
+    if (inMessage && inOptions && inMessage !== inOptions) {
+      throw refusal("bad_request",
+        `email() was given two idempotency keys, ${JSON.stringify(inMessage)} in the message and ` +
+          `${JSON.stringify(inOptions)} in the options`,
+        { hint: "pass idempotencyKey once — toft.notify.email({ to, subject, text }, { idempotencyKey })" });
+    }
+    const idempotencyKey = inOptions || inMessage;
     const recipients = addresses(to, "to");
     if (!recipients.length) {
       throw new ToftError("email needs at least one recipient in 'to'", { body: { code: "no_recipient", retryable: false, hint: "name who it goes to: pass an address in to (or cc, bcc) — an email has no default recipient" } });

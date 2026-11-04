@@ -33,7 +33,7 @@
 
 import { ROLE_ANONYMOUS, ROLE_UNKNOWN, caller } from "./caller.js";
 import { Jobs, requestDeadline } from "./jobs.js";
-import { ToftError, takeOptions, transport } from "./transport.js";
+import { ToftError, noMoreArgs, takeOptions, transport } from "./transport.js";
 
 /**
  * How long a resolved identity is reused for the same blob.
@@ -178,6 +178,7 @@ function shapeIdentity(body) {
 
 /** Drop every cached identity. For tests; app code passes `refresh`. */
 export function resetIdentityCache() {
+  noMoreArgs("resetIdentityCache()", arguments, 0, "resetIdentityCache()");
   identityCache.clear();
 }
 
@@ -192,6 +193,7 @@ export function resetIdentityCache() {
  * outlive the request (`would_outlive_request`).
  */
 export function viewer(headers) {
+  noMoreArgs("viewer()", arguments, 1, "toft.viewer(req.headers)");
   const blob = findHeader(headers, ACT_FOR_HEADER);
   if (!blob) {
     throw new ToftError(

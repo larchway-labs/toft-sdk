@@ -150,4 +150,5 @@ def local_file_error(path: object, exc: OSError) -> ToftError:
     retryable.
     """
     code = "not_found" if isinstance(exc, FileNotFoundError) else "bad_request"
-    return refused(code, f"cannot read {path}: {exc.strerror or exc}")
+    return refused(code, f"cannot read {path}: {exc.strerror or exc}",
+                   "check the path — it is read from this process's working directory unless it is absolute")

@@ -55,7 +55,17 @@ func require(name string) (string, error) {
 	if value := strings.TrimSpace(os.Getenv(name)); value != "" {
 		return value, nil
 	}
-	return "", &Error{Body: refusal(missingCode(name)), Message: missing(name)}
+	code := missingCode(name)
+	return "", &Error{Body: refusal(code, missingHint(name, code)), Message: missing(name)}
+}
+
+// missingHint is the next step for require's refusal, in Python's words for
+// the same two cases.
+func missingHint(name, code string) string {
+	if code == "job_send_only" {
+		return "do this from the service process, or write the result with run.WriteOutputJSON(...) and let an endpoint fold it in"
+	}
+	return "run this in an app deployed on Toft, which sets " + name + "; to try it locally, export the variables a deployed app is given"
 }
 
 // missingCode is the code [missing]'s sentence carries: job_send_only — the

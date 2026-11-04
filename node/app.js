@@ -44,6 +44,7 @@ export class App {
   }
 
   refresh() {
+    noMoreArgs("app.refresh()", arguments, 0, "toft.app.refresh()");
     this.#view = null;
     return this;
   }
@@ -69,11 +70,13 @@ export class App {
 
   /** The display name — not in the environment, so a request, once. */
   async name() {
+    noMoreArgs("app.name()", arguments, 0, "await toft.app.name()");
     return (await this.#load()).name ?? "";
   }
 
   /** `shared` or `isolated`. */
   async mode() {
+    noMoreArgs("app.mode()", arguments, 0, "await toft.app.mode()");
     return (await this.#load()).mode ?? "";
   }
 
@@ -92,6 +95,7 @@ export class App {
    * its own origin, so nothing an app could check told the two apart.
    */
   async basePath() {
+    noMoreArgs("app.basePath()", arguments, 0, "await toft.app.basePath()");
     return (await this.#load()).base_path ?? (process.env[ENV_BASE_PATH] ?? "").trim();
   }
 
@@ -102,11 +106,13 @@ export class App {
    * app is visible on that app.
    */
   async policy() {
+    noMoreArgs("app.policy()", arguments, 0, "await toft.app.policy()");
     return (await this.#load()).policy ?? {};
   }
 
   /** Every capability an administrator attached, e.g. `email.send`. */
   async capabilities() {
+    noMoreArgs("app.capabilities()", arguments, 0, "await toft.app.capabilities()");
     return (await this.#load()).capabilities ?? [];
   }
 
@@ -119,6 +125,7 @@ export class App {
    * guessing wrong should not be a silent false.
    */
   async can(capability) {
+    noMoreArgs("app.can()", arguments, 1, 'await toft.app.can("email")');
     // Refused rather than false: an empty name is a bug in the caller, and a
     // silent false reads as "not attached" and sends somebody to an
     // administrator over nothing.
@@ -222,6 +229,7 @@ export class Mount {
    * wrong call rather than corrupting data slowly.
    */
   async put(source, name) {
+    noMoreArgs("put()", arguments, 2, 'await toft.store("reports").put("nightly.parquet", "2026-08.parquet")');
     const targetName = name ?? path.basename(source);
     checkRelativeName(targetName);
 
@@ -244,7 +252,11 @@ export class Mount {
     try {
       await fs.access(source);
     } catch (err) {
-      throw fileRefusal(err, source);
+      // put()'s first argument is the local file to copy in, the second the
+      // name it lands under — a missing source said only "ENOENT" (BB-082).
+      throw fileRefusal(err, source, "read",
+        `put(source, name) copies the local file ${JSON.stringify(String(source))} into the store, and it ` +
+          "does not exist here — pass the path of a file on this machine first, the name it lands under second");
     }
     try {
       await fs.mkdir(path.dirname(destination), { recursive: true });
@@ -289,6 +301,7 @@ export class Mount {
    * creates new objects only, and an existing name is a refusal that says so.
    */
   async upload(source, name) {
+    noMoreArgs("upload()", arguments, 2, 'await toft.store("reports").upload("nightly.parquet", "2026-08.parquet")');
     const target = name || path.basename(source);
     checkRelativeName(target);
     let data;
@@ -326,6 +339,7 @@ export class Mount {
 
   /** Fetch one object's bytes, as a Buffer. */
   async download(name) {
+    noMoreArgs("download()", arguments, 1, 'await toft.store("reports").download("2026-08.parquet")');
     try {
       return await sendSigned(await this.#signGet(name, false));
     } catch (err) {
@@ -355,6 +369,7 @@ export class Mount {
 
   /** Delete one object. Needs `full`. */
   async remove(name) {
+    noMoreArgs("remove()", arguments, 1, 'await toft.store("reports").remove("2026-08.parquet")');
     checkRelativeName(name);
     await sendSigned(await transport().del(this.#route("/api/v1/app/store/{slug}/objects/{name}", name)));
   }
@@ -488,7 +503,17 @@ export function mounts() {
       `${ENV_STORAGE} should be a JSON array, got ${parsed === null ? "null" : typeof parsed}`,
       { hint: STORAGE_ENV_HINT });
   }
-  const entries = parsed.filter((m) => m && typeof m === "object" && !Array.isArray(m));
+  // An entry that is not an object — a number, null, a bare string — has no
+  // name, kind or access to be read from, and dropping it left the mapping
+  // silently missing: mounts() said [] and storage() not_mapped.
+  for (const entry of parsed) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw refused("storage_env_invalid",
+        `a ${ENV_STORAGE} entry is not an object with a name, kind and access: ${JSON.stringify(entry)}`,
+        { hint: STORAGE_ENV_HINT });
+    }
+  }
+  const entries = parsed;
   // The platform writes every entry with a name, a kind and an access level
   // (and a path, "" for a store reached over signed URLs). An entry missing
   // one is a hand-written stand-in that would resolve to a mount with empty
@@ -501,13 +526,28 @@ export function mounts() {
           { hint: STORAGE_ENV_HINT });
       }
     }
+    // Held to the values the platform writes: a kind it does not know is a
+    // mount store() and storage() would each guess at, and an access level it
+    // does not know makes readOnly answer false for a mount nothing granted
+    // write on.
+    for (const [key, allowed] of [["kind", STORAGE_KINDS], ["access", STORAGE_ACCESS]]) {
+      if (!allowed.includes(entry[key])) {
+        throw refused("storage_env_invalid",
+          `a ${ENV_STORAGE} entry's ${key} is ${JSON.stringify(entry[key])}, not one of ` +
+            `${allowed.join(", ")}: ${JSON.stringify(entry)}`,
+          { hint: STORAGE_ENV_HINT });
+      }
+    }
   }
   return entries.map((m) => new Mount(m));
 }
 
+const STORAGE_KINDS = ["volume", "store"];
+const STORAGE_ACCESS = ["read", "write", "full"];
+
 const STORAGE_ENV_HINT =
   "TOFT_STORAGE is a JSON array whose entries each name their name, kind (volume or store) " +
-  "and access, and a path where the resource is mounted — a store reached " +
+  "and access (read, write or full), and a path where the resource is mounted — a store reached " +
   "by signed URL has none; the platform writes it, and a local stand-in needs the same keys";
 
 /**

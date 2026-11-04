@@ -98,7 +98,7 @@ func ScratchDir(parts ...string) (string, error) {
 		return "", err
 	}
 	if err := os.MkdirAll(path, 0o700); err != nil {
-		return "", &Error{Body: refusal("scratch_unavailable"), Message: fmt.Sprintf("cannot create the scratch directory %s: %v", path, err), Wrapped: err}
+		return "", &Error{Body: refusal("scratch_unavailable", "check that TMPDIR (or the platform's scratch path) exists and is writable by this process"), Message: fmt.Sprintf("cannot create the scratch directory %s: %v", path, err), Wrapped: err}
 	}
 	return path, nil
 }
@@ -136,7 +136,7 @@ func localScratchRoot() (string, error) {
 	if !ok {
 		tmp, err := os.MkdirTemp("", "toft-scratch-")
 		if err != nil {
-			return "", &Error{Body: refusal("scratch_unavailable"), Message: fmt.Sprintf("cannot create a private scratch directory: %v", err), Wrapped: err}
+			return "", &Error{Body: refusal("scratch_unavailable", "check that the scratch directory is writable by this process and the disk is not full"), Message: fmt.Sprintf("cannot create a private scratch directory: %v", err), Wrapped: err}
 		}
 		root = tmp
 	}
@@ -189,7 +189,7 @@ func underScratch(base, call string, parts []string) (string, error) {
 func NewSessionID() (string, error) {
 	var raw [16]byte
 	if _, err := rand.Read(raw[:]); err != nil {
-		return "", &Error{Body: refusal("entropy_unavailable"), Message: fmt.Sprintf("cannot mint a session id: %v", err), Wrapped: err}
+		return "", &Error{Body: refusal("entropy_unavailable", "the system's random source failed; retry, or pass an id of your own to SessionScratchDir"), Message: fmt.Sprintf("cannot mint a session id: %v", err), Wrapped: err}
 	}
 	return base64.RawURLEncoding.EncodeToString(raw[:]), nil
 }

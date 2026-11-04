@@ -254,7 +254,7 @@ func (m Mount) checkIsStore() error {
 	if m.Kind == "" || m.Kind == "store" {
 		return nil
 	}
-	hint := fmt.Sprintf("use the path toft.Storage(%q) resolves, with the ordinary os and filepath calls", m.Name)
+	hint := fmt.Sprintf("use the path %s resolves, with the ordinary os and filepath calls", volumeAccessor(m.Name, m))
 	return &Error{Body: refusal("not_a_store", hint), Message: fmt.Sprintf(
 		"%q is a %s, which is reached at its path — only an object store is reached "+
 			"over signed URLs", m.Name, m.Kind)}

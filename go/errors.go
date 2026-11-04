@@ -167,7 +167,7 @@ func localFileError(verb, path string, err error) error {
 // filesystem — a full or read-only disk. Coded for the same reason, and not
 // retryable: the same write against the same disk fails the same way.
 func localWriteError(path string, err error) error {
-	return &Error{Body: refusal("write_failed"), Message: fmt.Sprintf("cannot write %s: %v", path, err), Wrapped: err}
+	return &Error{Body: refusal("write_failed", "check that the directory exists and this process may write there, and that the disk is not full"), Message: fmt.Sprintf("cannot write %s: %v", path, err), Wrapped: err}
 }
 
 // objectStoreRefusal is an object store's answer to a URL the platform minted. Coded,

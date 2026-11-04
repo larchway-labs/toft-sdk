@@ -212,6 +212,13 @@ _WAIT_TIMEOUT_HINT = ("the run is still going — wait again, or answer the requ
 _RUN_NULLABLE_FIELDS = ("rerun_of", "scheduled_for", "deadline", "exit_code", "failure_reason")
 
 
+def _seconds(value: Any) -> float | None:
+    """A duration the platform sent as a JSON number, None where it sent none."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
 @dataclass
 class JobRun:
     """A run, and everything an app can do with one.
@@ -256,6 +263,13 @@ class JobRun:
     #: ``timed out after 45m``, ``stopped at 1024 MB``.
     failure_reason: str | None = None
     peak_memory_mb: int | None = None
+    #: How long the run was held at its CPU limit, in seconds; None where its
+    #: cgroup kept no counter.
+    cpu_throttled_seconds: float | None = None
+    #: Where the run executed — ``shared`` or ``isolated``.
+    execution_mode: str | None = None
+    #: The job definition the run belongs to.
+    definition_id: str | None = None
     #: The run's live status page, on the app's own origin — where
     #: :meth:`Jobs.respond` sends a browser.
     status_url: str = ""
@@ -301,6 +315,9 @@ class JobRun:
             failure_stage=text("failure_stage"),
             failure_reason=text("failure_reason"),
             peak_memory_mb=data.get("peak_memory_mb"),
+            cpu_throttled_seconds=_seconds(data.get("cpu_throttled_seconds")),
+            execution_mode=text("execution_mode"),
+            definition_id=text("definition_id"),
             status_url=str(data.get("status_url") or ""),
             logs_url=str(data.get("logs_url") or ""),
             deduplicated=bool(data.get("deduplicated")),
@@ -613,7 +630,8 @@ class Jobs:
                 f"no run status called {status!r}",
                 hint="one of: " + ", ".join(sorted(LISTABLE_STATUSES)))
         if job is not None and not isinstance(job, str):
-            raise bad_request(f"list() takes a job name, got {type(job).__name__}")
+            raise bad_request(f"list() takes a job name, got {type(job).__name__}",
+                              hint="pass the job's name as a string, as toft.toml declares it under [jobs.<name>]")
         _check_limit(limit)
         return self._list(scope="app", job=job, status=status, limit=limit)
 
@@ -643,7 +661,8 @@ class Jobs:
                 },
             )
         if job is not None and not isinstance(job, str):
-            raise bad_request(f"mine() takes a job name, got {type(job).__name__}")
+            raise bad_request(f"mine() takes a job name, got {type(job).__name__}",
+                              hint="pass the job's name as a string, as toft.toml declares it under [jobs.<name>]")
         _check_limit(limit)
         try:
             return self._list(scope="viewer", job=job, status=None, limit=limit)
@@ -687,6 +706,13 @@ def respond(run: JobRun, request: Any = None) -> Any:
                 "hint": 'run = toft.jobs.start("report"); return toft.jobs.respond(run)',
             },
         )
+    if not run.id or not run.status_url:
+        # A JobRun built by hand has no status page to point at; answering 202
+        # with no Location would look like success (BB-077), as Go, Node and R
+        # refuse it.
+        raise bad_request(
+            "jobs.respond() takes the run start() returned — this one has no id or status page",
+            hint="pass the JobRun that toft.jobs.start() (or get()) returned, not one built by hand")
     flask_request = _flask_request()
     asking = request if request is not None else flask_request
     location = run.status_url

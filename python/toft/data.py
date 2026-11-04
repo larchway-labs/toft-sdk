@@ -177,6 +177,18 @@ class Data:
         has to be told apart from "there was an empty document" — that
         distinction is the one thing ``{}`` papers over.
         """
+        # Checked before the read, so a wrong argument is a bad_request on a
+        # laptop and on the platform alike, not "'dict' object is not
+        # callable" after a round trip.
+        if not callable(mutator):
+            raise ToftError(
+                f"update() takes a function, got {type(mutator).__name__}",
+                body={"code": "bad_request", "retryable": False,
+                      "hint": "update() takes a function that receives the current document "
+                              "({} when there is none) and either changes it in place or returns "
+                              "the new one, e.g. toft.data.update(lambda d: d.update(runs=d.get(\"runs\", 0) + 1)); "
+                              "to replace the document outright, use toft.data.set({...})"},
+            )
         last: ToftError | None = None
         conflicts = 0
         attempts = max(1, attempts)

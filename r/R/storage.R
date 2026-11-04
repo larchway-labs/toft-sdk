@@ -69,7 +69,7 @@ mounts <- function() {
 LOCAL_FILE_HINT <- "check the path — a relative one is resolved against the working directory, getwd()"
 
 STORAGE_ENV_HINT <- paste0(
-  "TOFT_STORAGE is a JSON array of objects, each with name, kind (volume or store) and access, ",
+  "TOFT_STORAGE is a JSON array of objects, each with name, kind (volume or store) and access (read, write or full), ",
   "plus path where the resource is mounted (a store reached by signed URL has none); ",
   "the platform writes it, and a local stand-in needs the same keys")
 
@@ -93,8 +93,25 @@ check_mount_entry <- function(entry) {
         hint = STORAGE_ENV_HINT))
     }
   }
+  # Held to the values the platform writes: a kind it does not know is a mount
+  # store() and storage() would each guess at, and an access level it does not
+  # know makes read_only answer FALSE for a mount nothing granted write on — as
+  # Python, Node and Go refuse them.
+  for (rule in list(list("kind", STORAGE_KINDS), list("access", STORAGE_ACCESS))) {
+    key <- rule[[1]]
+    if (!entry[[key]] %in% rule[[2]]) {
+      stop(toft_refusal("storage_env_invalid", sprintf(
+        "a %s entry's %s is '%s', not one of %s: %s", ENV_STORAGE, key, entry[[key]],
+        paste(rule[[2]], collapse = ", "),
+        as.character(jsonlite::toJSON(entry, auto_unbox = TRUE, null = "null"))),
+        hint = STORAGE_ENV_HINT))
+    }
+  }
   invisible(TRUE)
 }
+
+STORAGE_KINDS <- c("volume", "store")
+STORAGE_ACCESS <- c("read", "write", "full")
 
 #' Where a mount is, or a refusal when it is not mounted
 #'

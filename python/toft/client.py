@@ -83,7 +83,8 @@ class _RunnerTransport:
         return f"_RunnerTransport({self._base!r})"
 
     def __reduce_ex__(self, protocol: Any) -> Any:
-        raise refused("bad_request", "the runner transport holds the run's credential and cannot be pickled")
+        raise refused("bad_request", "the runner transport holds the run's credential and cannot be pickled",
+                      "pass run.id, or the plain values you need, to the other process instead")
 
     def request(self, method: str, path: str, body: Any = None) -> Any:
         data = json.dumps(body).encode() if body is not None else None
@@ -119,7 +120,8 @@ class _RunSecrets:
         return "_RunSecrets(<redacted>)"
 
     def __reduce_ex__(self, protocol: Any) -> Any:
-        raise refused("bad_request", "a run's credentials cannot be pickled")
+        raise refused("bad_request", "a run's credentials cannot be pickled",
+                      "pass run.id, or the plain values you need, to the other process instead")
 
 
 _SECRETS: "weakref.WeakKeyDictionary[Run, _RunSecrets]" = weakref.WeakKeyDictionary()
@@ -270,7 +272,8 @@ class Run:
         output_uri = self._output_uri()
         if not output_uri:
             raise ToftError("this run has no output location",
-                            body={"code": "no_output", "retryable": False})
+                            body={"code": "no_output", "retryable": False,
+                                  "hint": "write_output works inside a job run, which the platform gives an output location; outside one there is nowhere to write"})
         if not isinstance(data, (str, bytes, bytearray, memoryview)):
             raise bad_request(
                 f"write_output takes bytes or text, got {type(data).__name__}",
@@ -292,5 +295,6 @@ class Run:
         try:
             text = json.dumps(value, allow_nan=False)
         except (TypeError, ValueError) as exc:
-            raise bad_request(f"the output is not JSON-serializable: {exc}") from None
+            raise bad_request(f"the output is not JSON-serializable: {exc}",
+                              hint="convert it to dicts, lists, strings, numbers and booleans first, or write bytes with write_output") from None
         self.write_output(text)

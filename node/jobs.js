@@ -117,10 +117,10 @@ export const MAX_LIST_LIMIT = 200;
 // A job name or run id the SDK will not send: an empty one reached a route
 // with a hole in it and came back as route_not_found or "declares no job
 // called  ", neither of which names the mistake.
-function requireName(value, what) {
+function requireName(value, what, noun = "name", hint = "pass the job's name as toft.toml declares it under [jobs.<name>]") {
   if (typeof value !== "string" || !value.trim()) {
-    throw refusal("bad_request", `${what} needs a non-empty name, got ${JSON.stringify(value) ?? String(value)}`,
-      { hint: "pass the job's name as toft.toml declares it under [jobs.<name>], or a run's id" });
+    throw refusal("bad_request", `${what} needs a non-empty ${noun}, got ${JSON.stringify(value) ?? String(value)}`,
+      { hint });
   }
   return value;
 }
@@ -222,6 +222,12 @@ export class JobRun {
     /** Why it did not succeed, in words: `exit 3: connection refused`, `timed out after 45m`. */
     this.failureReason = text("failure_reason");
     this.peakMemoryMb = data.peak_memory_mb ?? null;
+    /** Seconds held at the CPU limit; null where the cgroup keeps no counter. */
+    this.cpuThrottledSeconds = data.cpu_throttled_seconds ?? null;
+    /** `shared` or `isolated`. */
+    this.executionMode = text("execution_mode");
+    /** The job definition's id — key on `job`, which is stable across deploys. */
+    this.definitionId = text("definition_id");
     /** The run's live status page, on the app's own origin — where `respond` sends a browser. */
     this.statusUrl = data.status_url ?? "";
     this.logsUrl = data.logs_url ?? "";
@@ -405,10 +411,21 @@ export class JobRun {
   }
 
   /** Log lines after `afterSeq`: `{seq, at, stream, line}` each. */
-  async logs(afterSeq = 0) {
+  async logs(afterSeq) {
     noMoreArgs("logs()", arguments, 1, "await run.logs(afterSeq)");
+    // One whole number, the last seq already read — never an options object,
+    // a string or NaN, each of which reached the platform as ?after=NaN (BB-078).
+    if (afterSeq === undefined || afterSeq === null) afterSeq = 0;
+    if (!Number.isInteger(afterSeq) || afterSeq < 0) {
+      const got = afterSeq !== null && typeof afterSeq === "object" && !Array.isArray(afterSeq)
+        ? `an options object (${Object.keys(afterSeq).join(", ") || "{}"})`
+        : JSON.stringify(afterSeq) ?? String(afterSeq);
+      throw refusal("bad_request",
+        `logs() takes the seq of the last line already read, a whole number from 0, got ${got}`,
+        { hint: "await run.logs() for every line, or run.logs(lastLine.seq) for the lines after it" });
+    }
     const raw = await transport().get(
-      `${RUNS_PATH}/${encodeURIComponent(this.id)}/logs?after=${Number(afterSeq)}`,
+      `${RUNS_PATH}/${encodeURIComponent(this.id)}/logs?after=${afterSeq}`,
       this._headers,
     );
     return raw?.lines ?? [];
@@ -473,12 +490,21 @@ export class JobRun {
  * just their headers.
  */
 export function respond(run, req) {
+  noMoreArgs("jobs.respond()", arguments, 2, "return toft.jobs.respond(run, req)");
   if (!(run instanceof JobRun)) {
     // A job name or run id in place of the run answered 202 with no Location
     // (BB-067, found in Python).
     throw refusal("bad_request",
       `jobs.respond() takes the run start() returned, got ${JSON.stringify(run) ?? typeof run}`,
       { hint: 'const run = await toft.jobs.start("report"); return toft.jobs.respond(run, req)' });
+  }
+  if (!run.id || !run.statusUrl) {
+    // A JobRun built by hand has no status page to point at; answering 202
+    // with no Location would look like success (BB-077), as Go, Python and R
+    // refuse it.
+    throw refusal("bad_request",
+      "jobs.respond() takes the run start() returned — this one has no id or status page",
+      { hint: "pass the JobRun that toft.jobs.start() (or get()) returned, not one built by hand" });
   }
   const headers = req?.headers ?? req;
   const html = findHeader(headers, "Accept").toLowerCase().includes("text/html");
@@ -547,12 +573,14 @@ export class Jobs {
 
   /** `respond(run, req)`, reached from the surface that started the run. */
   respond(run, req) {
+    noMoreArgs("jobs.respond()", arguments, 2, "return toft.jobs.respond(run, req)");
     return respond(run, req);
   }
 
   async get(runId) {
     noMoreArgs("jobs.get()", arguments, 1, "await toft.jobs.get(runId)");
-    requireName(runId, "jobs.get()");
+    requireName(runId, "jobs.get()", "run id",
+      "pass the id of a run — run.id from jobs.start() or jobs.list() — not a job's name");
     return this.#run(await transport().get(`${RUNS_PATH}/${encodeURIComponent(runId)}`, this._headers));
   }
 

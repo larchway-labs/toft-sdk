@@ -26,7 +26,7 @@
 
 import { inspect } from "node:util";
 
-import { refusal, takeOptions, transport } from "./transport.js";
+import { noMoreArgs, refusal, takeOptions, transport } from "./transport.js";
 
 /** The connection kinds a token is handed out for. */
 export const TOKEN_KINDS = ["sharepoint", "onedrive", "gdrive"];
@@ -119,5 +119,6 @@ export function azureCredential(kind, options) {
 
 /** Forget every cached token. For tests. */
 export function resetTokenCache() {
+  noMoreArgs("resetTokenCache()", arguments, 0, "resetTokenCache()");
   cache.clear();
 }

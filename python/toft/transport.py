@@ -107,7 +107,8 @@ class Part:
             )
         raise bad_request(
             "an attachment must be a path, a (filename, bytes) pair, or a "
-            f"mapping with 'name' and 'content' — got {type(value).__name__}"
+            f"mapping with 'name' and 'content' — got {type(value).__name__}",
+            hint="pass a file path, (\"report.csv\", data), or {\"name\": \"report.csv\", \"content\": data}",
         )
 
 
@@ -117,7 +118,8 @@ def _content_bytes(content: Any) -> bytes:
     if isinstance(content, (bytes, bytearray, memoryview)):
         return bytes(content)
     raise bad_request(
-        f"an attachment's content must be bytes or text — got {type(content).__name__}")
+        f"an attachment's content must be bytes or text — got {type(content).__name__}",
+        hint="encode it first — json.dumps(value) for data, or the file's bytes")
 
 
 def encode_json(body: Any) -> bytes:
@@ -254,7 +256,8 @@ class AppTransport:
             location = exc.headers.get("Location", "") if exc.headers else ""
             if not location:
                 raise refused("unexpected_response",
-                              "the platform redirected without a location") from None
+                              "the platform redirected without a location",
+                              "check TOFT_API_URL names the install itself, not a proxy or sign-in page in front of it") from None
         except urllib.error.URLError as exc:
             raise ToftError(
                 f"cannot reach Toft at {self._base}: {exc.reason}"
@@ -346,7 +349,8 @@ def _from_http_error_or_redirect(exc: urllib.error.HTTPError, path: str) -> Toft
     """
     if 300 <= exc.code < 400:
         return ToftError(f"unexpected redirect from {path}", status=exc.code,
-                         body={"code": "unexpected_redirect", "retryable": False})
+                         body={"code": "unexpected_redirect", "retryable": False,
+                               "hint": "check TOFT_API_URL names the install itself, not a proxy or sign-in page in front of it"})
     return _from_http_error(exc)
 
 

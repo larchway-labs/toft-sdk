@@ -263,6 +263,7 @@ export class Run {
   }
 
   static fromEnv() {
+    noMoreArgs("Run.fromEnv()", arguments, 0, "Run.fromEnv(), or read toft.run");
     return new Run();
   }
 
@@ -372,6 +373,7 @@ export class Run {
    * then make an app written against it unable to move to isolated mode.
    */
   async writeOutput(data) {
+    noMoreArgs("writeOutput()", arguments, 1, "await run.writeOutput(data)");
     if (!this.outputUri) {
       throw refusal("no_output", "this run has no output location",
         { hint: "the runner sets TOFT_OUTPUT_URI for every run on the platform — call writeOutput from inside a job" });
@@ -430,14 +432,8 @@ export const SESSION_HEADER = "X-Toft-Session";
  * is created.
  */
 export function scratchDir(...parts) {
+  checkScratchParts("scratchDir()", parts, 'scratchDir("uploads")');
   const root = resolve(process.env.TOFT_SCRATCH_DIR || localScratchRoot());
-  for (const part of parts) {
-    if (typeof part !== "string" || isAbsolute(part) || part.includes("\0")) {
-      throw refusal("bad_request",
-        `scratchDir() takes relative path parts, got ${JSON.stringify(part)}`,
-        { hint: 'name a subpath inside the scratch root, e.g. scratchDir("uploads")' });
-    }
-  }
   const path = resolve(root, ...parts);
   const rel = relative(root, path);
   if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
@@ -447,6 +443,18 @@ export function scratchDir(...parts) {
   }
   mkdirSync(path, { recursive: true, mode: 0o700 });
   return path;
+}
+
+// Relative path parts and nothing else, refused under the name of the call the
+// caller made: sessionScratchDir's parts said "scratchDir() takes …" (BB-083).
+function checkScratchParts(call, parts, example) {
+  for (const part of parts) {
+    if (typeof part !== "string" || isAbsolute(part) || part.includes("\0")) {
+      throw refusal("bad_request",
+        `${call} takes relative path parts, got ${JSON.stringify(part) ?? typeof part}`,
+        { hint: `name a subpath inside the scratch root, e.g. ${example}` });
+    }
+  }
 }
 
 /**
@@ -526,6 +534,7 @@ export function sessionScratchDir(sessionId, ...parts) {
       },
     );
   }
+  checkScratchParts("sessionScratchDir()", parts, 'sessionScratchDir(sid, "uploads")');
   const encoded = createHash("sha256").update(String(sessionId)).digest("hex").slice(0, 32);
   return scratchDir(encoded, ...parts);
 }
@@ -553,6 +562,7 @@ export function sessionScratchDir(sessionId, ...parts) {
  *     https.
  */
 export function newSessionId() {
+  noMoreArgs("newSessionId()", arguments, 0, "const sid = toft.newSessionId()");
   return randomBytes(16).toString("base64url");
 }
 

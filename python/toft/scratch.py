@@ -86,7 +86,8 @@ def scratch_dir(*parts: str) -> Path:
     for part in parts:
         if not isinstance(part, (str, os.PathLike)):
             raise bad_request(
-                f"scratch_dir parts are path segments, got {type(part).__name__}")
+                f"scratch_dir parts are path segments, got {type(part).__name__}",
+                hint="pass each part as a string, e.g. scratch_dir(\"exports\", \"2026\")")
         if os.path.isabs(os.fspath(part)) or os.path.splitdrive(os.fspath(part))[0]:
             raise bad_request(
                 f"scratch_dir parts are relative to the scratch root, got {os.fspath(part)!r}",

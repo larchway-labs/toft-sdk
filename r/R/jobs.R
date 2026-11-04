@@ -251,6 +251,14 @@ job_start <- function(job, ..., params = NULL, idempotency_key = NULL) {
 #' @export
 job_respond <- function(run, res = NULL, req = NULL) {
   check_run(run, "job_respond")
+  # A run with no status page has nowhere to send the caller; answering 202
+  # with no Location would look like success (BB-077), as Go, Node and Python
+  # refuse it.
+  if (!is.character(run$status_url) || length(run$status_url) != 1 || !nzchar(run$status_url)) {
+    stop(toft_refusal("bad_request",
+      "job_respond needs the run job_start() returned - this one has no status page",
+      hint = "pass the run job_start() or job_get() returned, not one built by hand"))
+  }
   caller <- parent.frame()
   if (is.null(res)) res <- get0("res", envir = caller, inherits = FALSE)
   if (is.null(req)) req <- get0("req", envir = caller, inherits = FALSE)

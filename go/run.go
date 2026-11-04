@@ -240,7 +240,7 @@ func (r *Run) Log(message string, isError bool) {
 // to move to isolated mode.
 func (r *Run) WriteOutput(ctx context.Context, body []byte) error {
 	if r.OutputURI == "" {
-		return &Error{Body: refusal("no_output"), Message: "this run has no output location"}
+		return &Error{Body: refusal("no_output", "WriteOutput works inside a job run, which the platform gives an output location; outside one there is nowhere to write"), Message: "this run has no output location"}
 	}
 	ctx, cancel := context.WithTimeout(ctx, uploadTimeout)
 	defer cancel()

@@ -122,6 +122,7 @@ export class Caller {
    * human in front of me". See `isPerson`.
    */
   atLeast(role) {
+    noMoreArgs("atLeast()", arguments, 1, "c.atLeast(toft.ROLE_EDITOR)");
     // A misspelt rung answered false for everybody — a page silently denied —
     // so a word that is not a role is the caller's mistake, bad_request.
     if (!Object.hasOwn(PERSON_RANK, role) && ![ROLE_SYSTEM, ROLE_APP, ROLE_UNKNOWN].includes(role)) {

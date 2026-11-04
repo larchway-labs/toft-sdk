@@ -182,6 +182,10 @@ func Mounts() ([]Mount, error) {
 	if err := json.Unmarshal([]byte(raw), &entries); err != nil {
 		return nil, &Error{Body: refusal("storage_env_invalid", storageEnvHint), Message: fmt.Sprintf("%s is not a JSON array of resources: %v", EnvStorage, err), Wrapped: err}
 	}
+	if entries == nil {
+		// "null" decodes into a nil slice without complaint; it is not a list.
+		return nil, &Error{Body: refusal("storage_env_invalid", storageEnvHint), Message: fmt.Sprintf("%s is not a JSON array of resources: null", EnvStorage)}
+	}
 	out := make([]Mount, 0, len(entries))
 	for _, entry := range entries {
 		// The platform writes every entry with a name, a kind and an access
@@ -196,12 +200,41 @@ func Mounts() ([]Mount, error) {
 					Message: fmt.Sprintf("a %s entry has no %s: %s", EnvStorage, key, encoded)}
 			}
 		}
+		// Held to the values the platform writes: a kind it does not know is a
+		// mount Store and Storage would each guess at, and an access level it
+		// does not know makes ReadOnly answer false for a mount nothing granted
+		// write on — as Python, Node and R refuse them.
+		for _, field := range []struct {
+			key, value string
+			allowed    []string
+		}{{"kind", entry.Kind, storageKinds}, {"access", entry.Access, storageAccess}} {
+			if !contains(field.allowed, field.value) {
+				encoded, _ := json.Marshal(entry)
+				return nil, &Error{Body: refusal("storage_env_invalid", storageEnvHint),
+					Message: fmt.Sprintf("a %s entry's %s is %q, not one of %s: %s", EnvStorage, field.key,
+						field.value, strings.Join(field.allowed, ", "), encoded)}
+			}
+		}
 		out = append(out, Mount(entry))
 	}
 	return out, nil
 }
 
-const storageEnvHint = "TOFT_STORAGE is a JSON array of objects, each with name, kind (volume or store) and access, " +
+var (
+	storageKinds  = []string{"volume", "store"}
+	storageAccess = []string{"read", "write", "full"}
+)
+
+func contains(list []string, value string) bool {
+	for _, v := range list {
+		if v == value {
+			return true
+		}
+	}
+	return false
+}
+
+const storageEnvHint = "TOFT_STORAGE is a JSON array of objects, each with name, kind (volume or store) and access (read, write or full), " +
 	"plus path where the resource is mounted (a store reached by signed URL has none); " +
 	"the platform writes it, and a local stand-in needs the same keys"
 
@@ -358,13 +391,24 @@ func checkStore(name string, mount Mount, err error) (Mount, error) {
 		return Mount{}, err
 	}
 	if mount.Kind != "" && mount.Kind != "store" {
-		hint := fmt.Sprintf("use the path toft.Storage(%q) resolves, with the ordinary os and filepath calls", name)
+		resolve := volumeAccessor(name, mount)
+		hint := fmt.Sprintf("use the path %s resolves, with the ordinary os and filepath calls", resolve)
 		return mount, &Error{Body: refusal("not_a_store", hint), Message: fmt.Sprintf(
 			"%q is a %s, not a store. A volume is a real filesystem — write to the path "+
-				"toft.Storage(%q) resolves, with the ordinary os and filepath calls.",
-			name, mount.Kind, name)}
+				"%s resolves, with the ordinary os and filepath calls.",
+			name, mount.Kind, resolve)}
 	}
 	return mount, nil
+}
+
+// volumeAccessor is the call that resolves a volume's path: StorageIn when the
+// mount is a folder, because Storage on a name mounted at several folders is
+// ambiguous_mount (BB-083).
+func volumeAccessor(name string, m Mount) string {
+	if m.Folder != "" {
+		return fmt.Sprintf("toft.StorageIn(%q, %q)", name, m.Folder)
+	}
+	return fmt.Sprintf("toft.Storage(%q)", name)
 }
 
 // refusal is the envelope a refusal this SDK makes itself carries. None of them

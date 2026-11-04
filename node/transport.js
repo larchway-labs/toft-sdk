@@ -239,9 +239,15 @@ export function toJson(value) {
  * `not_found` for a path that is not there, `bad_request` for anything else
  * (a directory, a permission). Neither is helped by trying again.
  */
-export function fileRefusal(err, what, verb = "read") {
-  const code = err?.code === "ENOENT" || err?.code === "ENOTDIR" ? "not_found" : "bad_request";
-  return refusal(code, `cannot ${verb} ${what}: ${err?.message ?? err}`);
+export function fileRefusal(err, what, verb = "read", hint) {
+  const missing = err?.code === "ENOENT" || err?.code === "ENOTDIR";
+  const code = missing ? "not_found" : "bad_request";
+  // Every refusal the SDK raises itself carries a hint (BB-082): the caller's
+  // own file, named, and what to check.
+  const fallback = missing
+    ? `check the path: ${JSON.stringify(String(what))} does not exist on this machine`
+    : `check that this process can ${verb} ${JSON.stringify(String(what))}`;
+  return refusal(code, `cannot ${verb} ${what}: ${err?.message ?? err}`, { hint: hint ?? fallback });
 }
 
 /**
@@ -602,9 +608,11 @@ export function errorFromText(resp, text) {
 let shared = null;
 
 export function transport() {
+  noMoreArgs("transport()", arguments, 0, "transport()");
   return (shared ??= new AppTransport());
 }
 
 export function resetTransport(t = null) {
+  noMoreArgs("resetTransport()", arguments, 1, "resetTransport(new AppTransport({ baseUrl, token }))");
   shared = t;
 }

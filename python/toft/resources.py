@@ -70,7 +70,17 @@ class Mount:
         # field behind it; None where the resource is not mounted here.
         path = self.mount_path or None
         return (f"Mount(name={self.name!r}, kind={self.kind!r}, path={path!r}, "
-                f"access={self.access!r}, folder={self.folder!r})")
+                f"access={self.access!r}, folder={self.folder!r}, "
+                f"read_only={self.read_only!r}, mounted={self.mounted!r})")
+
+    def to_dict(self) -> dict:
+        """The mount under the names Node, Go and R serialise it with —
+        ``path`` ("" where not mounted here), ``read_only`` and ``mounted``
+        among them — so ``json.dumps([m.to_dict() for m in toft.mounts()])``
+        renders what the other three print (BB-044 parity)."""
+        return {"name": self.name, "kind": self.kind, "path": self.mount_path,
+                "access": self.access, "folder": self.folder,
+                "read_only": self.read_only, "mounted": self.mounted}
 
     @property
     def read_only(self) -> bool:
@@ -367,8 +377,14 @@ def mounts() -> list[Mount]:
 
     out: list[Mount] = []
     for entry in parsed:
+        # An entry that is not an object — a number, null, a bare string — has
+        # no name, kind or access to be read from, and dropping it left the
+        # mapping silently missing: mounts() said [] and storage() not_mapped.
         if not isinstance(entry, dict):
-            continue
+            raise _refused("storage_env_invalid",
+                           f"a {ENV_STORAGE} entry is not an object with a name, kind and access: "
+                           f"{json.dumps(entry)}",
+                           hint=_STORAGE_ENV_HINT)
         # The platform writes every entry with a name, a kind and an access
         # level (and a path, "" for a store reached over signed URLs). An entry
         # missing one is a hand-written stand-in that would resolve to a mount
@@ -379,6 +395,16 @@ def mounts() -> list[Mount]:
             if not isinstance(value, str) or not value.strip():
                 raise _refused("storage_env_invalid",
                                f"a {ENV_STORAGE} entry has no {key}: {json.dumps(entry)}",
+                               hint=_STORAGE_ENV_HINT)
+        # Held to the values the platform writes: a kind it does not know is a
+        # mount store() and storage() would each guess at, and an access level
+        # it does not know makes read_only answer False for a mount nothing
+        # granted write on.
+        for key, allowed in (("kind", _STORAGE_KINDS), ("access", _STORAGE_ACCESS)):
+            if entry[key] not in allowed:
+                raise _refused("storage_env_invalid",
+                               f"a {ENV_STORAGE} entry's {key} is {entry[key]!r}, not one of "
+                               f"{', '.join(allowed)}: {json.dumps(entry)}",
                                hint=_STORAGE_ENV_HINT)
         out.append(
             Mount(
@@ -414,6 +440,9 @@ def storage(name: str, folder: str | None = None) -> Mount:
     """
     return _resolve(name, folder, "storage")
 
+
+_STORAGE_KINDS = ("volume", "store")
+_STORAGE_ACCESS = ("read", "write", "full")
 
 _STORAGE_ENV_HINT = ("TOFT_STORAGE is a JSON array of entries, each with a name, a kind (volume or "
                      "store) and an access (read, write or full); path is optional — a store reached "

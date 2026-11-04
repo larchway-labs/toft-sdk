@@ -137,6 +137,13 @@ type JobRun struct {
 	FailureStage  string `json:"failure_stage,omitempty"`
 	FailureReason string `json:"failure_reason,omitempty"`
 	PeakMemoryMB  *int   `json:"peak_memory_mb,omitempty"`
+	// CPUThrottledSeconds is how long the run was held at its CPU limit, nil
+	// where its cgroup kept no counter.
+	CPUThrottledSeconds *float64 `json:"cpu_throttled_seconds,omitempty"`
+	// ExecutionMode is where the run executed — "shared" or "isolated".
+	ExecutionMode string `json:"execution_mode,omitempty"`
+	// DefinitionID is the job definition the run belongs to.
+	DefinitionID string `json:"definition_id,omitempty"`
 
 	// StatusURL is the run's live status page on the app's own origin, which
 	// [JobsClient.Respond] points a browser at. LogsURL is its log on the app
@@ -629,13 +636,19 @@ func (j *JobsClient) Start(ctx context.Context, job string, opts StartOptions) (
 // and the run as JSON, which is how a script or the app's own frontend learns
 // where to poll.
 //
-// The error is only ever the body's encoding; the status line has already been
-// written by then.
+// A run Start did not return — no id or no status page — is bad_request, with
+// nothing written, so the handler still owns the response. Any other error is
+// the body's encoding; the status line has already been written by then.
 func (j *JobsClient) Respond(w http.ResponseWriter, r *http.Request, run JobRun) error {
-	if run.StatusURL != "" {
-		w.Header().Set("Location", run.StatusURL)
+	// A run Start did not return has no status page to point at; answering 202
+	// with an empty Location would look like success (BB-077), as Python, Node
+	// and R refuse it.
+	if run.ID == "" || run.StatusURL == "" {
+		return badRequest("Respond takes the run Start returned — this one has no id or status page",
+			"pass the JobRun that toft.Jobs.Start (or Get) returned, not one built by hand")
 	}
-	if r != nil && run.StatusURL != "" && strings.Contains(strings.ToLower(r.Header.Get("Accept")), "text/html") {
+	w.Header().Set("Location", run.StatusURL)
+	if r != nil && strings.Contains(strings.ToLower(r.Header.Get("Accept")), "text/html") {
 		w.WriteHeader(http.StatusSeeOther)
 		return nil
 	}
