@@ -21,6 +21,7 @@ are the whole of how the app reaches it::
     uploads = toft.store("uploads")
     uploads.upload("report.csv")                    # a new object, or a refusal
     link = uploads.url("report.csv", attachment=True)  # hand to a browser
+    mailed = uploads.link("report.csv")             # for an email: lasts, grant holders only
 """
 
 from __future__ import annotations
@@ -183,6 +184,27 @@ class Mount:
         it. ``attachment`` makes a browser save it under the object's own name.
         """
         return str(self._sign_get(name, attachment, call="url")["url"])
+
+    def link(self, name: str) -> str:
+        """A lasting link to one file, for a message somebody opens later.
+
+        **Only people granted this storage can open it.** Grant the recipients
+        the store (Admin → Storage → its page lists who holds it), or send them
+        something else: anyone else who opens the link gets "Not found".
+
+        Unlike ``url()`` it carries no credential and does not expire. It is the
+        platform's address plus the store and the name; opening it signs the
+        reader in and checks their grant at that moment. It opens whatever is at
+        the name *then* — write a dated name, never a fixed one, if a mailed link
+        must keep meaning the mailed file. The file need not exist yet.
+        Works on a store and on a volume on a host root, in a job too.
+        """
+        _check_name_type(name, "link")
+        _check_relative_name(name, "link")
+        path = "/api/v1/app/store/{slug}/link/{name}".replace(
+            "{slug}", urllib.parse.quote(self.name, safe="")).replace("{name}", _quote_name(name))
+        answer = transport().get(f"{path}?{urllib.parse.urlencode({'folder': self.folder})}") or {}
+        return str(answer["link"])
 
     def remove(self, name: str) -> None:
         """Delete one object. Needs ``full``."""

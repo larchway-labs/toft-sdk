@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 )
 
 // The app's view of itself.
@@ -60,6 +61,11 @@ type AppInfo struct {
 type AppClient struct {
 	mu     sync.Mutex
 	cached *AppInfo
+
+	// The address, kept apart from the view: read fresh (URLTTL), where the
+	// view is held for the life of the process.
+	address   *appAddress
+	addressAt time.Time
 }
 
 // Self is the whole view: identity and capabilities together.
@@ -103,6 +109,7 @@ func (a *AppClient) Refresh() *AppClient {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.cached = nil
+	a.address = nil
 	return a
 }
 

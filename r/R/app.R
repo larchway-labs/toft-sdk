@@ -13,6 +13,7 @@
 #'   the feature".
 #' @export
 app_info <- function(refresh = FALSE) {
+  if (isTRUE(refresh)) .app_cache$address <- NULL
   if (isTRUE(refresh) || is.null(.app_cache$view)) {
     .app_cache$view <- toft_request("GET", "/api/v1/app/self")
   }
@@ -20,6 +21,87 @@ app_info <- function(refresh = FALSE) {
 }
 
 .app_cache <- new.env(parent = emptyenv())
+
+#' The absolute address of a page in this app, for a link that leaves it
+#'
+#' For an email, a Slack post, a PDF, a ticket — anywhere a relative link names
+#' nothing. Inside the app's own pages, relative links built from
+#' [app_base_path()] stay the right tool.
+#'
+#' ```r
+#' app_url("/reports/42")   # https://apps.example.com/apps/reporter/reports/42
+#' app_url()                # the app's front page
+#' app_url(run$status_url)  # a run's status page
+#' ```
+#'
+#' A path is the app's: `/reports/42` and `reports/42` both mean the app's own
+#' route, never the host's root, and one that already carries the base path is
+#' not prefixed twice. A query or fragment is kept; an absolute URL is refused
+#' `bad_request`.
+#'
+#' The address is asked of the platform rather than stored, and reused for
+#' sixty seconds: an administrator can move the install or give the app a
+#' hostname of its own while it runs. Works the same in a request, a job or a
+#' schedule. If the platform cannot be reached the last address this process
+#' was told is used; with none, the error is raised. An install with no address
+#' configured refuses with `no_public_address`.
+#'
+#' @param path A path inside the app.
+#' @return The absolute URL, as a string.
+#' @export
+app_url <- function(path = "") {
+  check_app_path(path)
+  address <- current_app_address()
+  join_app_url(address$public_url, address$base_path, path)
+}
+
+APP_URL_TTL <- 60
+
+current_app_address <- function() {
+  now <- as.numeric(Sys.time())
+  cached <- .app_cache$address
+  if (!is.null(cached) && now - .app_cache$address_at < APP_URL_TTL) {
+    return(cached)
+  }
+  got <- tryCatch(toft_request("GET", "/api/v1/app/url"), toft_error = function(e) e)
+  if (inherits(got, "toft_error")) {
+    # Unreachable — no status, no code — is the one failure a known address
+    # outlives. A refusal is the platform's answer and stands.
+    if (!is.null(cached) && is.na(got$status) && !nzchar(if (is.null(got$code)) "" else got$code)) {
+      return(cached)
+    }
+    stop(got)
+  }
+  field <- function(x) if (is.null(x)) "" else as.character(x)
+  .app_cache$address <- list(public_url = field(got$public_url), base_path = field(got$base_path))
+  .app_cache$address_at <- now
+  .app_cache$address
+}
+
+check_app_path <- function(path) {
+  if (!is.character(path) || length(path) != 1 || is.na(path)) {
+    stop(toft_refusal("bad_request", "app_url() takes one path, as a string",
+                      hint = 'app_url("/reports/42")'))
+  }
+  if (grepl("^[A-Za-z][A-Za-z0-9+.-]*:", path) || startsWith(path, "//")) {
+    stop(toft_refusal("bad_request",
+                      sprintf("app_url() was given an absolute URL (%s), which it would join onto this app's address", path),
+                      hint = 'pass the path inside the app, e.g. app_url("/reports/42")'))
+  }
+  invisible(TRUE)
+}
+
+# join_app_url is app_url()'s rule, held to sdk/testdata/app-url-vector.json
+# with the other three SDKs.
+join_app_url <- function(public_url, base_path, path) {
+  check_app_path(path)
+  if (nzchar(base_path) && startsWith(path, base_path)) {
+    rest <- substr(path, nchar(base_path) + 1, nchar(path))
+    if (!nzchar(rest) || substr(rest, 1, 1) %in% c("/", "?", "#")) path <- rest
+  }
+  if (!nzchar(path) || substr(path, 1, 1) != "/") path <- paste0("/", path)
+  paste0(sub("/+$", "", public_url), path)
+}
 
 #' Where this app is mounted
 #'

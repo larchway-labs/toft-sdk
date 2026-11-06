@@ -31,11 +31,44 @@ notice sooner.
 from __future__ import annotations
 
 import os
+import re
+import time
 from typing import Any
 
 from .env import ENV_BASE_PATH
-from .errors import bad_request
+from .errors import ToftError, bad_request
 from .session import transport
+
+#: How long an answer from ``/api/v1/app/url`` is reused. Short, because the
+#: address moves without a deploy and a link is only as good as the address it
+#: was built from; long enough that a job mailing a thousand people asks once.
+URL_TTL_SECONDS = 60.0
+
+_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+
+
+def join_app_url(public_url: str, base_path: str, path: str) -> str:
+    """Join an app path onto the app's public address — :meth:`App.url`'s rule.
+
+    A path is the app's, so ``/reports/42`` and ``reports/42`` both mean the
+    app's own route, never the host's root. A path that already carries the
+    base path — ``url_for`` behind ProxyFix, a run's ``status_url`` — is not
+    prefixed twice. A query or fragment is kept as written. An absolute URL is
+    refused: joining two origins is never what the caller meant.
+    """
+    if not isinstance(path, str):
+        raise bad_request(f"url() takes a path, got {path!r}", hint='e.g. toft.app.url("/reports/42")')
+    if _SCHEME.match(path) or path.startswith("//"):
+        raise bad_request(
+            f"url() was given an absolute URL ({path!r}), which it would join onto this app's address",
+            hint='pass the path inside the app, e.g. toft.app.url("/reports/42")')
+    if base_path and path.startswith(base_path) and path[len(base_path):][:1] in ("", "/", "?", "#"):
+        path = path[len(base_path):]
+    if path == "" or path[0] in "?#":
+        path = "/" + path
+    elif path[0] != "/":
+        path = "/" + path
+    return public_url.rstrip("/") + path
 
 
 class App:
@@ -43,6 +76,8 @@ class App:
 
     def __init__(self) -> None:
         self._view: dict[str, Any] | None = None
+        self._address: dict[str, str] | None = None
+        self._address_at = 0.0
 
     def _load(self) -> dict[str, Any]:
         if self._view is None:
@@ -52,6 +87,7 @@ class App:
     def refresh(self) -> "App":
         """Drop the cached view; the next read re-fetches it."""
         self._view = None
+        self._address = None
         return self
 
     @property
@@ -96,6 +132,46 @@ class App:
         if value is None:
             return os.environ.get(ENV_BASE_PATH, "").strip()
         return str(value)
+
+    def url(self, path: str = "") -> str:
+        """The absolute address of a page in this app, for a link that leaves it.
+
+        For an email, a Slack post, a PDF, a ticket — anywhere a relative link
+        names nothing. Inside the app's own pages, relative links built from
+        :attr:`base_path` stay the right tool::
+
+            toft.app.url("/reports/42")   # https://apps.example.com/apps/reporter/reports/42
+            toft.app.url()                # the app's front page
+            toft.app.url(run.status_url)  # a run's status page
+
+        The address is asked of the platform rather than stored, and reused for
+        :data:`URL_TTL_SECONDS`: an administrator can move the install or give
+        the app a hostname of its own while it runs, and a link built from a
+        value cached at start would point at the old address. Works the same in
+        a request, a job or a schedule. If the platform cannot be reached, the
+        last address this process was told is used; with none, the error is
+        raised. An install with no address configured refuses with
+        ``no_public_address``.
+        """
+        address = self._current_address()
+        return join_app_url(address["public_url"], address.get("base_path", ""), path)
+
+    def _current_address(self) -> dict[str, str]:
+        now = time.monotonic()
+        if self._address is not None and now - self._address_at < URL_TTL_SECONDS:
+            return self._address
+        try:
+            got = transport().get("/api/v1/app/url") or {}
+        except ToftError as e:
+            # Unreachable — no status, no code — is the one failure a known
+            # address outlives. A refusal is the platform's answer and stands.
+            if self._address is not None and e.status is None and not e.code:
+                return self._address
+            raise
+        self._address = {"public_url": str(got.get("public_url") or ""),
+                         "base_path": str(got.get("base_path") or "")}
+        self._address_at = now
+        return self._address
 
     @property
     def policy(self) -> dict[str, Any]:

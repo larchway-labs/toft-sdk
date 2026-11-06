@@ -4,7 +4,7 @@
 # An administrator maps a resource to an app, the platform mounts it where it
 # can and describes it in TOFT_STORAGE, and mounts() reads that description.
 # A store is also reached through the platform's signed URLs — store_list(),
-# store_upload(), store_download(), store_url() and store_remove() — in both
+# store_upload(), store_download(), store_url(), store_link() and store_remove() — in both
 # execution modes, so an app written against them moves between modes
 # unchanged. On a shared host a store is never mounted: its `path` is "", and
 # those five are the whole of how the app reaches it. The same functions exist
@@ -460,6 +460,34 @@ store_url <- function(mount, name, attachment = FALSE) {
   sign_get(mount, name, attachment, "store_url")$url
 }
 
+#' A lasting link to one file, for a message somebody opens later
+#'
+#' **Only people granted this storage can open it.** Grant the recipients the
+#' store (Admin → Storage → its page lists who holds it), or send them something
+#' else: anyone else who opens the link gets "Not found".
+#'
+#' Unlike [store_url()] it carries no credential and does not expire: it is the
+#' platform's address plus the store and the name, and opening it signs the
+#' reader in and checks their grant at that moment. It opens whatever is at the
+#' name then — write a dated name, never a fixed one, if a mailed link must keep
+#' meaning the mailed file. The file need not exist yet. Works on a store and on
+#' a volume on a host root ([storage()]), in a job too.
+#'
+#' @param mount A store or volume, as [store()] or [storage()] returns it, or a
+#'   store's name.
+#' @param name The file, relative to the mount.
+#' @return The link.
+#' @export
+store_link <- function(mount, name) {
+  mount <- as_store(mount, "store_link()")
+  check_relative_name(name, "store_link")
+  route <- sub("{slug}", utils::URLencode(mount$name, reserved = TRUE),
+               "/api/v1/app/store/{slug}/link/{name}", fixed = TRUE)
+  route <- sub("{name}", encode_name(name), route, fixed = TRUE)
+  answer <- store_request("GET", route, query = store_query(mount))
+  answer$link
+}
+
 #' Delete one object from a store. Needs `full`.
 #'
 #' @param mount A store, as [store()] returns it, or its name — an unmapped
@@ -598,6 +626,7 @@ NAME_EXAMPLE <- c(
   store_put = "store_put(s, \"local.csv\", \"reports/2026-08.csv\")",
   store_download = "store_download(s, \"reports/2026-08.csv\")",
   store_url = "store_url(s, \"reports/2026-08.csv\")",
+  store_link = "store_link(s, \"reports/2026-08.csv\")",
   store_remove = "store_remove(s, \"reports/2026-08.csv\")",
   store_list = "store_list(s, \"reports/\")"
 )

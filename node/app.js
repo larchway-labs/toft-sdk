@@ -31,9 +31,45 @@ import { ToftError, fetchStore, noMoreArgs, fileRefusal, onPlatform, require_, s
 const ENV_STORAGE = "TOFT_STORAGE";
 const ENV_BASE_PATH = "BASE_PATH";
 
+/**
+ * How long an answer from `/api/v1/app/url` is reused. Short, because the
+ * address moves without a deploy; long enough that a job mailing a thousand
+ * people asks once.
+ */
+export const URL_TTL_MS = 60_000;
+
+const SCHEME = /^[A-Za-z][A-Za-z0-9+.-]*:/;
+
+/**
+ * Join an app path onto the app's public address — `toft.app.url()`'s rule,
+ * held to sdk/testdata/app-url-vector.json with the other three SDKs.
+ *
+ * A path is the app's, so `/reports/42` and `reports/42` both mean the app's
+ * route, never the host's root. One that already carries the base path — a
+ * run's `statusUrl`, a framework's own URL helper — is not prefixed twice. A
+ * query or fragment is kept. An absolute URL is refused: joining two origins is
+ * never what the caller meant.
+ */
+export function joinAppUrl(publicUrl, basePath, path) {
+  if (typeof path !== "string") {
+    throw refused("bad_request", `url() takes a path, got ${inspect(path)}`, { hint: 'toft.app.url("/reports/42")' });
+  }
+  if (SCHEME.test(path) || path.startsWith("//")) {
+    throw refused("bad_request", `url() was given an absolute URL (${path}), which it would join onto this app's address`,
+      { hint: 'pass the path inside the app, e.g. toft.app.url("/reports/42")' });
+  }
+  if (basePath && path.startsWith(basePath) && ["", "/", "?", "#"].includes(path.slice(basePath.length, basePath.length + 1))) {
+    path = path.slice(basePath.length);
+  }
+  if (path === "" || path[0] === "?" || path[0] === "#" || path[0] !== "/") path = `/${path}`;
+  return publicUrl.replace(/\/+$/, "") + path;
+}
+
 /** This app, as the platform sees it. */
 export class App {
   #view = null;
+  #address = null;
+  #addressAt = 0;
 
   // Fetched once and cached for the life of the process: it is read on hot
   // paths and an administrator's change lands at the next deploy anyway.
@@ -46,7 +82,48 @@ export class App {
   refresh() {
     noMoreArgs("app.refresh()", arguments, 0, "toft.app.refresh()");
     this.#view = null;
+    this.#address = null;
     return this;
+  }
+
+  /**
+   * The absolute address of a page in this app, for a link that leaves it — an
+   * email, a Slack post, a PDF, a ticket. Inside the app's own pages, relative
+   * links built from `basePath()` stay the right tool.
+   *
+   *   await toft.app.url("/reports/42")  // https://apps.example.com/apps/reporter/reports/42
+   *   await toft.app.url()               // the app's front page
+   *   await toft.app.url(run.statusUrl)  // a run's status page
+   *
+   * Asked of the platform rather than stored, and reused for `URL_TTL_MS`: an
+   * administrator can move the install or give the app a hostname of its own
+   * while it runs. Works the same in a request, a job or a schedule. If the
+   * platform cannot be reached the last address this process was told is
+   * used; with none, the error is thrown. An install with no address
+   * configured refuses with `no_public_address`.
+   */
+  async url(path = "") {
+    noMoreArgs("app.url()", arguments, 1, 'await toft.app.url("/reports/42")');
+    if (typeof path !== "string") return joinAppUrl("", "", path);
+    const address = await this.#currentAddress();
+    return joinAppUrl(address.public_url, address.base_path, path);
+  }
+
+  async #currentAddress() {
+    const now = Date.now();
+    if (this.#address && now - this.#addressAt < URL_TTL_MS) return this.#address;
+    let got;
+    try {
+      got = (await transport().get("/api/v1/app/url")) ?? {};
+    } catch (err) {
+      // Unreachable — no status, no code — is the one failure a known address
+      // outlives. A refusal is the platform's answer and stands.
+      if (this.#address && err instanceof ToftError && err.status === undefined && !err.code) return this.#address;
+      throw err;
+    }
+    this.#address = { public_url: String(got.public_url ?? ""), base_path: String(got.base_path ?? "") };
+    this.#addressAt = now;
+    return this.#address;
   }
 
   /**
@@ -370,6 +447,30 @@ export class Mount {
     const { attachment = false } = takeOptions("url()", options, ["attachment"],
       'mount.url("report.pdf", { attachment: true })');
     return (await this.#signGet(name, attachment, "url")).url;
+  }
+
+  /**
+   * A lasting link to one file, for a message somebody opens later.
+   *
+   * **Only people granted this storage can open it.** Grant the recipients the
+   * store (Admin → Storage → its page lists who holds it), or send them
+   * something else: anyone else who opens the link gets "Not found".
+   *
+   * Unlike `url()` it carries no credential and does not expire: it is the
+   * platform's address plus the store and the name, and opening it signs the
+   * reader in and checks their grant at that moment. It opens whatever is at
+   * the name *then* — write a dated name, never a fixed one, if a mailed link
+   * must keep meaning the mailed file. The file need not exist yet. Works on a
+   * store and on a volume on a host root, in a job too.
+   */
+  async link(name) {
+    noMoreArgs("link()", arguments, 1, 'await toft.store("reports").link("2026-11/summary.pdf")');
+    checkRelativeName(name, "link");
+    const route = "/api/v1/app/store/{slug}/link/{name}"
+      .replace("{slug}", encodeURIComponent(this.name))
+      .replace("{name}", encodeName(name));
+    const answer = (await transport().get(`${route}?${new URLSearchParams({ folder: this.folder })}`)) ?? {};
+    return answer.link;
   }
 
   /** Delete one object. Needs `full`. */

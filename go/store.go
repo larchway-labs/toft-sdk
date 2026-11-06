@@ -161,6 +161,49 @@ func (m Mount) URL(ctx context.Context, name string, attachment bool) (string, e
 	return signed.URL, err
 }
 
+// Link is a lasting link to one file, for a message somebody opens later.
+//
+// **Only people granted this storage can open it.** Grant the recipients the
+// store (Admin → Storage → its page lists who holds it), or send them
+// something else: anyone else who opens the link gets "Not found".
+//
+// Unlike [Mount.URL] it carries no credential and does not expire: it is the
+// platform's address plus the store and the name, and opening it signs the
+// reader in and checks their grant at that moment. It opens whatever is at the
+// name then — write a dated name, never a fixed one, if a mailed link must keep
+// meaning the mailed file. The file need not exist yet. Works on a store and on
+// a volume on a host root, in a job too.
+func (m Mount) Link(ctx context.Context, name string) (string, error) {
+	if err := m.checkMapped(); err != nil {
+		return "", err
+	}
+	if err := checkRelativeName(name); err != nil {
+		return "", err
+	}
+	route := "/api/v1/app/store/{slug}/link/{name}"
+	route = strings.Replace(route, "{slug}", url.PathEscape(m.Name), 1)
+	route = strings.Replace(route, "{name}", escapeName(name), 1)
+	route += "?" + url.Values{"folder": {m.Folder}}.Encode()
+	t, err := client()
+	if err != nil {
+		return "", err
+	}
+	raw, err := t.get(ctx, route, nil)
+	if err != nil {
+		return "", storeRefusal(err)
+	}
+	var answer struct {
+		Link string `json:"link"`
+	}
+	if err := decode(raw, &answer); err != nil {
+		return "", err
+	}
+	if answer.Link == "" {
+		return "", &Error{Message: "the platform returned no link"}
+	}
+	return answer.Link, nil
+}
+
 // Remove deletes one object. It needs full.
 func (m Mount) Remove(ctx context.Context, name string) error {
 	if err := m.checkMapped(); err != nil {
