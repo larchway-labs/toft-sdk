@@ -584,6 +584,7 @@ const NAME_EXAMPLE = {
   download: 'download("reports/2026-08.csv")',
   url: 'url("reports/2026-08.csv")',
   remove: 'remove("reports/2026-08.csv")',
+  link: 'link("reports/2026-08.csv")',
   list: 'list("reports/")',
 };
 
@@ -595,7 +596,7 @@ function checkRelativeName(name, call) {
   if (typeof name !== "string") {
     const got = name === null ? "null" : Array.isArray(name) ? "an array" : typeof name;
     throw refused("bad_request", `${call}()'s object name is a string, got ${got}`,
-      { hint: `pass the name as a string: ${NAME_EXAMPLE[call]}` });
+      { hint: `pass the name as a string: ${NAME_EXAMPLE[call] ?? `${call}("reports/2026-08.csv")`}` });
   }
   if (!name) throw refused("invalid_name", "a name is required");
   if (name.startsWith("/") || name.endsWith("/")) {

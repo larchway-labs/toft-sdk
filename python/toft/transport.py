@@ -140,7 +140,11 @@ def encode_json(body: Any) -> bytes:
     if body is None:
         return b"{}"
     try:
-        return json.dumps(body, allow_nan=False).encode()
+        # Compact, and UTF-8 rather than \uXXXX escapes: app data's 256 KiB cap
+        # counts the bytes sent, and the default separators made a Python
+        # document ~18% larger than the same one from Node, Go or R (BB-89).
+        return json.dumps(body, allow_nan=False, separators=(",", ":"),
+                          ensure_ascii=False).encode()
     except (TypeError, ValueError) as exc:
         raise bad_request(
             f"the request body is not JSON-serializable: {exc}",

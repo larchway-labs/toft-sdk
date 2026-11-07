@@ -360,6 +360,7 @@ _NAME_EXAMPLE = {
     "download": 'download("reports/2026-08.csv")',
     "url": 'url("reports/2026-08.csv")',
     "remove": 'remove("reports/2026-08.csv")',
+    "link": 'link("reports/2026-08.csv")',
     "list": 'list("reports/")',
 }
 
@@ -371,8 +372,11 @@ def _check_name_type(name: Any, call: str, optional: bool = False) -> None:
     ``invalid_name`` "a name is required" (BB-109)."""
     if (name is None and optional) or isinstance(name, str):
         return
+    # .get: a store call added without a table entry still refuses, coded,
+    # rather than escaping as a KeyError (BB-85, link() was such a call).
+    example = _NAME_EXAMPLE.get(call) or call + '("reports/2026-08.csv")'
     raise _refused("bad_request", f"{call}()'s object name is a string, got {type(name).__name__}",
-                   hint=f"pass the name as a string: {_NAME_EXAMPLE[call]}")
+                   hint=f"pass the name as a string: {example}")
 
 
 def _check_source(source: Any, call: str) -> Path:
